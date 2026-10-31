@@ -235,15 +235,41 @@ static int rad_panel_prepare(struct drm_panel *panel)
 		usleep_range(18000, 20000);
 	}
 
+	ret = rad->pdata->enable(rad);
+	if (ret)
+		goto fail;
+
 	rad->prepared = true;
 
 	return 0;
+
+fail:
+	if (rad->reset)
+		gpiod_set_value_cansleep(rad->reset, 1);
+	regulator_bulk_disable(rad->num_supplies, rad->supplies);
+	return ret;
 }
 
 static int rad_panel_unprepare(struct drm_panel *panel)
 {
 	struct rad_panel *rad = to_rad_panel(panel);
+	struct mipi_dsi_device *dsi = rad->dsi;
+	struct device *dev = &dsi->dev;
 	int ret;
+
+	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	usleep_range(10000, 12000);
+
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (ret < 0)
+		dev_err(dev, "Failed to set display OFF (%d)\n", ret);
+
+	usleep_range(5000, 10000);
+
+	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	if (ret < 0)
+		dev_err(dev, "Failed to enter sleep mode (%d)\n", ret);
 
 	/*
 	 * Right after asserting the reset, we need to release it, so that the
@@ -338,12 +364,11 @@ static int rm67191_enable(struct rad_panel *panel)
 		goto fail;
 	}
 
-	backlight_enable(panel->backlight);
-
 	return 0;
 
 fail:
-	gpiod_set_value_cansleep(panel->reset, 1);
+	if (panel->reset)
+		gpiod_set_value_cansleep(panel->reset, 1);
 
 	return ret;
 }
@@ -418,18 +443,11 @@ static int rm67199_enable(struct rad_panel *panel)
 		goto fail;
 	}
 
-	/*
-	 * Also, 100ms delay between display-on and backlight enable as per
-	 * manufacturer initialization sequence.
-	 */
-	msleep(100);
-
-	backlight_enable(panel->backlight);
-
 	return 0;
 
 fail:
-	gpiod_set_value_cansleep(panel->reset, 1);
+	if (panel->reset)
+		gpiod_set_value_cansleep(panel->reset, 1);
 
 	return ret;
 }
@@ -438,35 +456,16 @@ static int rad_panel_enable(struct drm_panel *panel)
 {
 	struct rad_panel *rad = to_rad_panel(panel);
 
-	return rad->pdata->enable(rad);
+	backlight_enable(rad->backlight);
+
+	return 0;
 }
 
 static int rad_panel_disable(struct drm_panel *panel)
 {
 	struct rad_panel *rad = to_rad_panel(panel);
-	struct mipi_dsi_device *dsi = rad->dsi;
-	struct device *dev = &dsi->dev;
-	int ret;
-
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	backlight_disable(rad->backlight);
-
-	usleep_range(10000, 12000);
-
-	ret = mipi_dsi_dcs_set_display_off(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set display OFF (%d)\n", ret);
-		return ret;
-	}
-
-	usleep_range(5000, 10000);
-
-	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to enter sleep mode (%d)\n", ret);
-		return ret;
-	}
 
 	return 0;
 }
@@ -677,6 +676,8 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 				     DRM_MODE_CONNECTOR_DSI);
 	if (IS_ERR(panel))
 		return PTR_ERR(panel);
+
+	panel->panel.prepare_prev_first = true;
 
 	mipi_dsi_set_drvdata(dsi, panel);
 

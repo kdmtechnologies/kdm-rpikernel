@@ -454,19 +454,11 @@ fail:
 
 static int rad_panel_enable(struct drm_panel *panel)
 {
-	struct rad_panel *rad = to_rad_panel(panel);
-
-	backlight_enable(rad->backlight);
-
 	return 0;
 }
 
 static int rad_panel_disable(struct drm_panel *panel)
 {
-	struct rad_panel *rad = to_rad_panel(panel);
-
-	backlight_disable(rad->backlight);
-
 	return 0;
 }
 
@@ -761,18 +753,27 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 
 	gpiod_set_value_cansleep(panel->reset, 1);
 
-	memset(&bl_props, 0, sizeof(bl_props));
-	bl_props.type = BACKLIGHT_RAW;
-	bl_props.brightness = 255;
-	bl_props.max_brightness = 255;
-
-	panel->backlight = devm_backlight_device_register(dev, dev_name(dev),
-							  dev, dsi, &rad_bl_ops,
-							  &bl_props);
-	if (IS_ERR(panel->backlight)) {
-		ret = PTR_ERR(panel->backlight);
-		dev_err(dev, "Failed to register backlight (%d)\n", ret);
+	ret = drm_panel_of_backlight(&panel->panel);
+	if (ret)
 		return ret;
+
+	if (!panel->panel.backlight) {
+		memset(&bl_props, 0, sizeof(bl_props));
+		bl_props.type = BACKLIGHT_RAW;
+		bl_props.brightness = 255;
+		bl_props.max_brightness = 255;
+
+		panel->backlight = devm_backlight_device_register(dev, dev_name(dev),
+								  dev, dsi, &rad_bl_ops,
+								  &bl_props);
+		if (IS_ERR(panel->backlight)) {
+			ret = PTR_ERR(panel->backlight);
+			dev_err(dev, "Failed to register backlight (%d)\n", ret);
+			return ret;
+		}
+		panel->panel.backlight = panel->backlight;
+	} else {
+		panel->backlight = panel->panel.backlight;
 	}
 
 	ret = rad_init_regulators(panel);

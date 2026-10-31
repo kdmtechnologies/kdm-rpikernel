@@ -2661,9 +2661,9 @@ static const struct drm_display_mode kd055hdfia001_default_mode = {
 	.clock		= 59603,
 
 	.hdisplay	= 720,
-	.hsync_start	= 720 + 11,
-	.hsync_end	= 720 + 11 + 6,
-	.htotal		= 720 + 11 + 6 + 19,
+	.hsync_start	= 720 + 16,
+	.hsync_end	= 720 + 16 + 6,
+	.htotal		= 720 + 16 + 6 + 14,
 
 	.vdisplay	= 1280,
 	.vsync_start	= 1280 + 10,

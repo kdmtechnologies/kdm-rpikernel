@@ -180,7 +180,7 @@
           248 249 250 251 252 253 254 255
         >;
         default-brightness-level = <200>;
-        pwms = <&pwm 0 200000>;
+        pwms = <&pwm 0 200000 0>;
         power-supply = <&vdd_3v3_reg>;
         status = "okay";
       };

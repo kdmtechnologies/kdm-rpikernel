@@ -119,10 +119,10 @@
           #size-cells = <0>;
           status = "okay";
 
-          gt911: gt911@14 {
+          gt911: gt911@5d {
             status = "okay";
             compatible = "goodix,gt911";
-            reg = <0x14>;
+            reg = <0x5D>;
             pinctrl-names = "default";
             pinctrl-0 = <&goodix_pins>;
             interrupt-parent = <&gpio>;

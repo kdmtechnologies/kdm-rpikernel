@@ -121,10 +121,11 @@
 
   fragment@4 {
     target = <&pwm>;
-    __overlay__ {
-      status = "okay";
+    frag1: __overlay__ {
       pinctrl-names = "default";
       pinctrl-0 = <&pwm_pins>;
+      assigned-clock-rates = <1000000>;
+      status = "okay";
     };
   };
 
@@ -179,7 +180,7 @@
           248 249 250 251 252 253 254 255
         >;
         default-brightness-level = <200>;
-        pwms = <&pwm 0 200000 0>;
+        pwms = <&pwm 0 200000>;
         power-supply = <&vdd_3v3_reg>;
         status = "okay";
       };

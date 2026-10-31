@@ -364,6 +364,10 @@ static int rm67191_enable(struct rad_panel *panel)
 		goto fail;
 	}
 
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
+	dev_info(dev, "RM67199 panel initialized successfully\n");
+
 	return 0;
 
 fail:
@@ -442,6 +446,10 @@ static int rm67199_enable(struct rad_panel *panel)
 		dev_err(dev, "Failed to set display ON (%d)\n", ret);
 		goto fail;
 	}
+
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
+	dev_info(dev, "RM67199 panel initialized successfully\n");
 
 	return 0;
 

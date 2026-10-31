@@ -268,6 +268,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	rpi-power-hat-t.dtbo \
 	rpi-sense.dtbo \
 	rpi-sense-v2.dtbo \
+	raydium-rm67199.dtbo \
 	rpi-tv.dtbo \
 	rra-digidac1-wm8741-audio.dtbo \
 	rt5616.dtbo \

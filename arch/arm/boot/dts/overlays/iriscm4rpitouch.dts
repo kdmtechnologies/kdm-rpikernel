@@ -1,0 +1,145 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2711";
+
+    fragment@0 {
+        target=<&dsi1>;
+
+        __overlay__ {
+            status = "okay";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port {
+                dsi1_out_port: endpoint {
+                    remote-endpoint = <&panel_dsi_in1>;
+                };
+            };
+
+            display1: panel@0 {
+                compatible = "startek,kd055hdfia001";
+                reg=<0>;
+                backlight = <&rpi_backlight>;
+                vdd-supply = <&vdd_3v3_reg>;
+                power-supply = <&vdd_3v3_reg>;
+                reset-gpios = <&gpio 17 1>;
+                port {
+                    panel_dsi_in1: endpoint {
+                        remote-endpoint = <&dsi1_out_port>;
+                    };
+                };
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&gpio>;
+        __overlay__ {
+            pwm_pins: pwm_pins {
+                brcm,pins = <12>;
+                brcm,function = <4>; // ALT0
+            };
+        };
+    };
+
+    fragment@2 {
+        target = <&pwm>;
+        frag1: __overlay__ {
+            pinctrl-names = "default";
+            pinctrl-0 = <&pwm_pins>;
+            assigned-clock-rates = <1000000>;
+            status = "okay";
+        };
+    };
+
+    fragment@3 {
+        target-path = "/";
+        __overlay__ {
+            rpi_backlight: rpi_backlight {
+                compatible = "pwm-backlight";
+                brightness-levels = <
+                  0  20  20  21  21  22  22  23
+                  23  24  24  25  25  26  26  27
+                  27  28  28  29  29  30  30  31
+                  31  32  32  33  33  34  34  35
+                  35  36  36  37  37  38  38  39
+                  40  41  42  43  44  45  46  47
+                  48  49  50  51  52  53  54  55
+                  56  57  58  59  60  61  62  63
+                  64  65  66  67  68  69  70  71
+                  72  73  74  75  76  77  78  79
+                  80  81  82  83  84  85  86  87
+                  88  89  90  91  92  93  94  95
+                  96  97  98  99 100 101 102 103
+                  104 105 106 107 108 109 110 111
+                  112 113 114 115 116 117 118 119
+                  120 121 122 123 124 125 126 127
+                  128 129 130 131 132 133 134 135
+                  136 137 138 139 140 141 142 143
+                  144 145 146 147 148 149 150 151
+                  152 153 154 155 156 157 158 159
+                  160 161 162 163 164 165 166 167
+                  168 169 170 171 172 173 174 175
+                  176 177 178 179 180 181 182 183
+                  184 185 186 187 188 189 190 191
+                  192 193 194 195 196 197 198 199
+                  200 201 202 203 204 205 206 207
+                  208 209 210 211 212 213 214 215
+                  216 217 218 219 220 221 222 223
+                  224 225 226 227 228 229 230 231
+                  232 233 234 235 236 237 238 239
+                  240 241 242 243 244 245 246 247
+                  248 249 250 251 252 253 254 255
+                >;
+                default-brightness-level = <200>;
+                pwms = <&pwm 0 200000>;
+                power-supply = <&vdd_3v3_reg>;
+                status = "okay";
+            };
+        };
+    };
+
+    fragment@4 {
+      target = <&gpio>;
+      __overlay__ {
+        goodix_pins: goodix_pins {
+          brcm,pins = <23 24>; // interrupt and reset
+          brcm,function = <0 0>; // in
+          brcm,pull = <2 2>; // pull-up
+        };
+      };
+    };
+
+    fragment@5 {
+      target = <&i2c0>;
+        __overlay__ {
+          #address-cells = <1>;
+          #size-cells = <0>;
+          status = "okay";
+
+          gt911: gt911@14 {
+            status = "okay";
+            compatible = "goodix,gt911";
+            reg = <0x14>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&goodix_pins>;
+            interrupt-parent = <&gpio>;
+            interrupts = <23 2>; // high-to-low edge triggered
+            irq-gpios = <&gpio 23 0>;
+            reset-gpios = <&gpio 24 0>;
+            touchscreen-size-x = <720>;
+            touchscreen-size-y = <1280>;
+          };
+        };
+    };
+
+    fragment@6 {
+      target = <&i2c0mux>;
+      __overlay__ {
+          pinctrl-0 = <&i2c0_gpio44>;
+      };
+    };
+
+};

@@ -419,6 +419,7 @@ struct goodix_ts_esd {
  */
 struct goodix_ts_core {
 	int initialized;
+	bool stage2_initialized;
 	struct platform_device *pdev;
 	struct goodix_ts_device *ts_dev;
 	struct input_dev *input_dev;
@@ -438,6 +439,7 @@ struct goodix_ts_core {
 	atomic_t irq_enabled;
 	atomic_t suspended;
 
+	struct delayed_work poll_work;
 	struct notifier_block ts_notifier;
 	struct goodix_ts_esd ts_esd;
 

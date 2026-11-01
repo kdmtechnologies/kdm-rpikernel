@@ -164,24 +164,26 @@ static int goodix_cfg_bin_proc(struct goodix_ts_core *core_data)
 	/*get cfg_bin from file system*/
 	r = goodix_read_cfg_bin(ts_dev->dev, cfg_bin);
 	if (r < 0) {
-		ts_info("Failed get valid config bin data, falling back to default registers");
-		ts_dev->reg.version_base = 0x8240;
-		ts_dev->reg.version_len = 1;
-		ts_dev->reg.pid = 0x8240;
+		ts_info("Failed get valid config bin data, falling back to GT9886 Normandy registers");
+		ts_dev->ic_type = IC_TYPE_NORMANDY;
+		ts_dev->reg.cfg_send_flag = 0x6F68;
+		ts_dev->reg.version_base = 0x452C;
+		ts_dev->reg.version_len = 72;
+		ts_dev->reg.pid = 0x4535;
 		ts_dev->reg.pid_len = 4;
-		ts_dev->reg.vid = 0x8244;
-		ts_dev->reg.vid_len = 2;
-		ts_dev->reg.sensor_id = 0x8246;
-		ts_dev->reg.sensor_id_mask = 0xFF;
-		ts_dev->reg.fw_mask = 0x8247;
-		ts_dev->reg.fw_status = 0x8248;
-		ts_dev->reg.cfg_addr = 0x8050;
-		ts_dev->reg.esd = 0x8043;
-		ts_dev->reg.command = 0x8040;
-		ts_dev->reg.coor = 0x824E;
-		ts_dev->reg.gesture = 0x8140;
-		ts_dev->reg.fw_request = 0x8044;
-		ts_dev->reg.proximity = 0x824E;
+		ts_dev->reg.vid = 0x453D;
+		ts_dev->reg.vid_len = 4;
+		ts_dev->reg.sensor_id = 0x4541;
+		ts_dev->reg.sensor_id_mask = 0x0F;
+		ts_dev->reg.fw_mask = 0x452C;
+		ts_dev->reg.fw_status = 0x4180;
+		ts_dev->reg.cfg_addr = 0x6F78;
+		ts_dev->reg.esd = 0x0000;
+		ts_dev->reg.command = 0x6F68;
+		ts_dev->reg.coor = 0x4100;
+		ts_dev->reg.gesture = 0x4100;
+		ts_dev->reg.fw_request = 0x6F6D;
+		ts_dev->reg.proximity = 0x4100;
 		ts_dev->cfg_bin_state = CFG_BIN_STATE_INITIALIZED;
 		r = 0;
 		goto exit;
@@ -434,27 +436,17 @@ static int goodix_read_cfg_bin(struct device *dev, struct goodix_cfg_bin *cfg_bi
 {
 	const struct firmware *firmware = NULL;
 	char cfg_bin_name[32] = {0x00};
-	int i = 0, r;
+	int r;
 
 	/*get cfg_bin_name*/
 	strscpy(cfg_bin_name, TS_DEFAULT_CFG_BIN, sizeof(cfg_bin_name));
 
 	ts_info("cfg_bin_name:%s", cfg_bin_name);
 
-	for (i = 0; i < TS_RQST_FW_RETRY_TIMES; i++) {
-		r = request_firmware(&firmware, cfg_bin_name, dev);
-		if (r < 0) {
-			ts_err("failed get cfg bin[%s] error:%d, try_times:%d",
-				cfg_bin_name, r, i + 1);
-			msleep(1000);
-		} else {
-			ts_info("Cfg_bin image [%s] is ready, try_times:%d",
-				cfg_bin_name, i + 1);
-			break;
-		}
-	}
-	if (i >= TS_RQST_FW_RETRY_TIMES) {
-		ts_err("get cfg_bin FAILED");
+	r = request_firmware_direct(&firmware, cfg_bin_name, dev);
+	if (r < 0) {
+		ts_info("optional cfg bin [%s] not present (%d), using chip flash config",
+			cfg_bin_name, r);
 		goto exit;
 	}
 
@@ -468,8 +460,10 @@ static int goodix_read_cfg_bin(struct device *dev, struct goodix_cfg_bin *cfg_bi
 	cfg_bin->bin_data_len = firmware->size;
 	/*allocate memory for cfg_bin->bin_data*/
 	cfg_bin->bin_data = kzalloc(cfg_bin->bin_data_len, GFP_KERNEL);
-	if (!cfg_bin->bin_data)
+	if (!cfg_bin->bin_data) {
 		r = -ENOMEM;
+		goto exit;
+	}
 
 	memcpy(cfg_bin->bin_data, firmware->data, cfg_bin->bin_data_len);
 
@@ -569,7 +563,6 @@ static int goodix_later_init_thread(void *data)
 	ts_err("stage2 init failed, %d", ret);
 
 release_core:
-	goodix_ts_core_release(ts_core);
 	return ret;
 }
 

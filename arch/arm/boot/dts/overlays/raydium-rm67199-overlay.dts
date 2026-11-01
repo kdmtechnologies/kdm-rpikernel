@@ -90,7 +90,7 @@
       #size-cells = <0>;
 
       gt9886: gt9886@5d {
-        status = "disabled";
+        status = "okay";
         compatible = "goodix,gt9886";
         reg = <0x5d>;
         pinctrl-names = "default";
@@ -118,9 +118,33 @@
     };
   };
 
+  fragment@4 {
+    target = <&i2c0if>;
+    __overlay__ {
+      status = "okay";
+    };
+  };
+
+  fragment@5 {
+    target = <&i2c0mux>;
+    __overlay__ {
+      status = "okay";
+    };
+  };
+
+  fragment@6 {
+    target = <&i2c0_gpio44>;
+    __overlay__ {
+      brcm,pull = <2>; // Enable internal pull-ups on GPIO44/45 (SDA0/SCL0)
+    };
+  };
+
   __overrides__ {
     touch = <&gt9886>,"status";
     rotation = <&display1>,"rotation:0";
+    swapxy = <&gt9886>,"goodix,swap-axis?";
+    invertx = <&gt9886>,"goodix,x2x?";
+    inverty = <&gt9886>,"goodix,y2y?";
   };
 
 };

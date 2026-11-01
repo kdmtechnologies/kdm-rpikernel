@@ -1024,7 +1024,6 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 	u8 irq_flag = 0;
 	int r;
 
-	core_data->irq_trig_cnt++;
 	/* inform external module */
 	mutex_lock(&goodix_modules.mutex);
 	list_for_each_entry_safe(ext_module, next,
@@ -1041,6 +1040,10 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 
 	/* read touch data from touch device */
 	r = ts_dev->hw_ops->event_handler(ts_dev, ts_event);
+	if (r == -ENOENT)
+		return IRQ_HANDLED;
+
+	core_data->irq_trig_cnt++;
 	if (likely(r >= 0)) {
 		if (ts_event->event_type == EVENT_TOUCH) {
 			/* report touch */
@@ -1059,6 +1062,27 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 	ts_dev->hw_ops->write_trans(ts_dev, ts_dev->reg.coor, &irq_flag, 1);
 
 	return IRQ_HANDLED;
+}
+
+#define GOODIX_POLL_INTERVAL_MS 15
+
+static void goodix_ts_poll_work_func(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct goodix_ts_core *core_data = container_of(dwork,
+			struct goodix_ts_core, poll_work);
+
+	if (!core_data->initialized || !core_data->stage2_initialized ||
+	    atomic_read(&core_data->suspended))
+		return;
+
+	if (atomic_read(&core_data->irq_enabled))
+		goodix_ts_threadirq_func(core_data->irq, core_data);
+
+	if (core_data->initialized && core_data->stage2_initialized &&
+	    !atomic_read(&core_data->suspended))
+		schedule_delayed_work(&core_data->poll_work,
+				      msecs_to_jiffies(GOODIX_POLL_INTERVAL_MS));
 }
 
 /**
@@ -1351,6 +1375,7 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 
 	input_dev->name = GOODIX_CORE_DRIVER_NAME;
 	input_dev->phys = GOOIDX_INPUT_PHYS;
+	input_dev->dev.parent = core_data->ts_dev->dev;
 	input_dev->id.product = 0xDEAD;
 	input_dev->id.vendor = 0xBEEF;
 	input_dev->id.version = 10427;
@@ -1433,15 +1458,17 @@ static int goodix_ts_pen_dev_config(struct goodix_ts_core *core_data)
 
 void goodix_ts_input_dev_remove(struct goodix_ts_core *core_data)
 {
+	if (!core_data->input_dev)
+		return;
 	input_unregister_device(core_data->input_dev);
-	input_free_device(core_data->input_dev);
 	core_data->input_dev = NULL;
 }
 
 void goodix_ts_pen_dev_remove(struct goodix_ts_core *core_data)
 {
+	if (!core_data->pen_dev)
+		return;
 	input_unregister_device(core_data->pen_dev);
-	input_free_device(core_data->pen_dev);
 	core_data->pen_dev = NULL;
 }
 
@@ -1644,6 +1671,8 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 
 	/* disable irq */
 	goodix_ts_irq_enable(core_data, false);
+	if (core_data->stage2_initialized)
+		cancel_delayed_work_sync(&core_data->poll_work);
 
 	/* let touch ic work in sleep mode */
 	if (ts_dev && ts_dev->hw_ops->suspend)
@@ -1751,6 +1780,9 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 	goodix_ts_irq_enable(core_data, true);
+	if (core_data->stage2_initialized)
+		schedule_delayed_work(&core_data->poll_work,
+				      msecs_to_jiffies(GOODIX_POLL_INTERVAL_MS));
 
 	/*
 	 * notify resume event, inform the esd protector
@@ -1896,6 +1928,11 @@ int goodix_ts_stage2_init(struct goodix_ts_core *core_data)
 
 	/* esd protector */
 	goodix_ts_esd_init(core_data);
+
+	INIT_DELAYED_WORK(&core_data->poll_work, goodix_ts_poll_work_func);
+	core_data->stage2_initialized = true;
+	schedule_delayed_work(&core_data->poll_work,
+			      msecs_to_jiffies(GOODIX_POLL_INTERVAL_MS));
 	return 0;
 exit:
 	if (ts_dev->board_data.pen_enable) {
@@ -2001,12 +2038,21 @@ static void goodix_ts_remove(struct platform_device *pdev)
 
 	core_data->initialized = 0;
 	core_module_prob_sate = CORE_MODULE_REMOVED;
+	if (core_data->stage2_initialized) {
+		core_data->stage2_initialized = false;
+		cancel_delayed_work_sync(&core_data->poll_work);
+	}
 	if (atomic_read(&core_data->ts_esd.esd_on))
 		goodix_ts_esd_off(core_data);
 	goodix_remove_all_ext_modules();
+	if (core_data->input_dev) {
+		goodix_ts_sysfs_exit(core_data);
+		if (core_data->pen_dev)
+			goodix_ts_pen_dev_remove(core_data);
+		goodix_ts_input_dev_remove(core_data);
+	}
 	goodix_ts_power_off(core_data);
 	goodix_debugfs_exit();
-	goodix_ts_sysfs_exit(core_data);
 }
 
 #ifdef CONFIG_PM

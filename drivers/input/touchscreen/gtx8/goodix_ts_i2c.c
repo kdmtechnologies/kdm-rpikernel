@@ -277,6 +277,9 @@ int goodix_i2c_test(struct goodix_ts_device *dev)
 	return -EINVAL;
 }
 
+static int goodix_set_i2c_doze_mode(struct goodix_ts_device *dev, int enable);
+static void goodix_reset_doze_state(void);
+
 /* confirm current device is goodix or not.
  * If confirmed 0 will return.
  */
@@ -297,9 +300,11 @@ static int goodix_ts_dev_confirm(struct goodix_ts_device *ts_dev)
 		msleep(10);
 		if (gpio_is_valid(ts_dev->board_data.irq_gpio))
 			gpio_direction_input(ts_dev->board_data.irq_gpio);
-		msleep(50);
+		msleep(70);
+		goodix_reset_doze_state();
 		if (!goodix_i2c_test(ts_dev)) {
-			msleep(50);
+			goodix_set_i2c_doze_mode(ts_dev, false);
+			msleep(20);
 			return 0;
 		}
 	}
@@ -448,20 +453,26 @@ write_exit:
 }
 
 
+static DEFINE_MUTEX(doze_mode_lock);
+static bool doze_disabled;
+
+static void goodix_reset_doze_state(void)
+{
+	mutex_lock(&doze_mode_lock);
+	doze_disabled = false;
+	mutex_unlock(&doze_mode_lock);
+}
+
 /**
  * goodix_set_i2c_doze_mode - disable or enable doze mode
  * @dev: pointer to device data
  * @enable: true/flase
  * return: 0 - ok; < 0 - error.
- * This func must be used in pairs, when you disable doze
- * mode, then you must enable it again.
- * Between set_doze_false and set_doze_true, do not reset
- * IC!
+ * Keep I2C doze mode disabled while the IC is awake so BCM2835 I2C
+ * transfers do not read leading zeros during GT9886 bus wake-up.
  */
 static int goodix_set_i2c_doze_mode(struct goodix_ts_device *dev, int enable)
 {
-	static DEFINE_MUTEX(doze_mode_lock);
-	static int doze_mode_set_count;
 	int result = -EINVAL;
 	int i;
 	u8 w_data, r_data;
@@ -469,60 +480,33 @@ static int goodix_set_i2c_doze_mode(struct goodix_ts_device *dev, int enable)
 	if (dev->ic_type != IC_TYPE_NORMANDY)
 		return 0;
 
+	if (enable)
+		return 0;
+
 	mutex_lock(&doze_mode_lock);
+	if (doze_disabled) {
+		result = 0;
+		goto exit;
+	}
 
-	if (enable) {
-		if (doze_mode_set_count != 0)
-			doze_mode_set_count--;
-
-		/*when count equal 0, allow ic enter doze mode*/
-		if (doze_mode_set_count == 0) {
-			w_data = TS_DOZE_ENABLE_DATA;
-			for (i = 0; i < TS_DOZE_ENABLE_RETRY_TIMES; i++) {
-				result = goodix_i2c_write_trans(dev,
-						TS_REG_DOZE_CTRL, &w_data, 1);
-				if (!result) {
-					result = 0;
-					goto exit;
-				}
-				usleep_range(1000, 1100);
-			}
-			if (i >= TS_DOZE_ENABLE_RETRY_TIMES)
-				ts_err("i2c doze mode enable failed");
-		} else {
-			/*ts_info("doze count not euqal 0,
-			 * so skip doze mode enable");
-			 */
+	w_data = TS_DOZE_DISABLE_DATA;
+	goodix_i2c_write_trans(dev, TS_REG_DOZE_CTRL, &w_data, 1);
+	usleep_range(1000, 1100);
+	for (i = 0; i < TS_DOZE_DISABLE_RETRY_TIMES; i++) {
+		r_data = 0;
+		goodix_i2c_read_trans(dev, TS_REG_DOZE_STAT, &r_data, 1);
+		if (TS_DOZE_CLOSE_OK_DATA == r_data) {
+			doze_disabled = true;
 			result = 0;
 			goto exit;
-		}
-	} else {
-		doze_mode_set_count++;
-
-		if (doze_mode_set_count == 1) {
+		} else if (0xAA != r_data) {
 			w_data = TS_DOZE_DISABLE_DATA;
 			goodix_i2c_write_trans(dev, TS_REG_DOZE_CTRL,
 					       &w_data, 1);
-			usleep_range(1000, 1100);
-			for (i = 0; i < TS_DOZE_DISABLE_RETRY_TIMES; i++) {
-				goodix_i2c_read_trans(dev,
-						TS_REG_DOZE_STAT, &r_data, 1);
-				if (TS_DOZE_CLOSE_OK_DATA == r_data) {
-					result = 0;
-					goto exit;
-				} else if (0xAA != r_data) {
-					w_data = TS_DOZE_DISABLE_DATA;
-					goodix_i2c_write_trans(dev,
-						TS_REG_DOZE_CTRL, &w_data, 1);
-				}
-				usleep_range(10000, 10100);
-			}
-			ts_err("doze mode disable FAILED");
-		} else {
-			result = 0;
-			goto exit;
 		}
+		usleep_range(10000, 10100);
 	}
+	ts_err("doze mode disable FAILED");
 
 exit:
 	mutex_unlock(&doze_mode_lock);
@@ -1297,6 +1281,9 @@ int goodix_hw_reset(struct goodix_ts_device *dev)
 		gpio_direction_input(dev->board_data.irq_gpio);
 	msleep(80);
 
+	goodix_reset_doze_state();
+	goodix_set_i2c_doze_mode(dev, false);
+
 	/*init dynamic esd*/
 	if (dev->reg.esd) {
 		r = goodix_i2c_write_trans(dev, dev->reg.esd, data, 1);
@@ -1613,6 +1600,7 @@ static int goodix_touch_handler_ys(struct goodix_ts_device *dev,
 	if (buffer[3] & 0x01) {
 		ts_debug("TODO add custom info process function");
 	}
+	r = 0;
 exit_clean_sta:
 	return r;
 }
@@ -1681,6 +1669,7 @@ static int goodix_touch_handler_nor(struct goodix_ts_device *dev,
 			pre_finger_num = touch_num;
 		}
 	}
+	r = 0;
 exit_clean_sta:
 	return r;
 }
@@ -1702,27 +1691,31 @@ static int goodix_event_handler(struct goodix_ts_device *dev,
 	if (unlikely(r < 0))
 		return r;
 
+	/* buffer[0]: event state */
+	event_sta = pre_buf[0];
+	if (!(event_sta & (GOODIX_TOUCH_EVENT | GOODIX_REQUEST_EVENT |
+			   GOODIX_GESTURE_EVENT | GOODIX_HOTKNOT_EVENT)))
+		return -ENOENT;
+
 	if (dev->ic_type == IC_TYPE_YELLOWSTONE &&
 	    checksum_u8_ys(pre_buf, IRQ_HEAD_LEN_YS)) {
 		ts_debug("irq head checksum error %*ph",
 			IRQ_HEAD_LEN_YS, pre_buf);
 		return -EINVAL;
 	}
-	/* buffer[0]: event state */
-	event_sta = pre_buf[0];
 	if (likely((event_sta & GOODIX_TOUCH_EVENT) == GOODIX_TOUCH_EVENT)) {
 		/* handle touch event */
 		if (dev->ic_type == IC_TYPE_YELLOWSTONE)
-			goodix_touch_handler_ys(dev, ts_event, pre_buf,
-				     		pre_read_len);
+			r = goodix_touch_handler_ys(dev, ts_event, pre_buf,
+						    pre_read_len);
 		else
-			goodix_touch_handler_nor(dev, ts_event, pre_buf,
-				     		 pre_read_len);
+			r = goodix_touch_handler_nor(dev, ts_event, pre_buf,
+						     pre_read_len);
 	} else if (unlikely((event_sta & GOODIX_REQUEST_EVENT) ==
 			     GOODIX_REQUEST_EVENT)) {
 		/* handle request event */
 		ts_event->event_type = EVENT_REQUEST;
-		goodix_request_handler(dev);
+		r = goodix_request_handler(dev);
 	} else if ((event_sta & GOODIX_GESTURE_EVENT) ==
 		   GOODIX_GESTURE_EVENT) {
 		/* handle gesture event */
@@ -1854,6 +1847,7 @@ static int goodix_i2c_probe(struct i2c_client *client)
 
 	ts_device->name = "Goodix TouchDevcie";
 	ts_device->dev = &client->dev;
+	ts_device->ic_type = IC_TYPE_NORMANDY;
 	ts_device->hw_ops = &hw_i2c_ops;
 
 	/* ts core device */

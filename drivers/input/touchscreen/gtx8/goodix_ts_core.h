@@ -729,6 +729,17 @@ int goodix_ts_esd_init(struct goodix_ts_core *core);
 int goodix_ts_register_notifier(struct notifier_block *nb);
 int goodix_start_later_init(struct goodix_ts_core *ts_core);
 
+#define CORE_MODULE_UNPROBED     0
+#define CORE_MODULE_PROB_SUCCESS 1
+#define CORE_MODULE_PROB_FAILED -1
+#define CORE_MODULE_REMOVED     -2
+extern int core_module_prob_sate;
+
+int goodix_ts_core_init(void);
+void goodix_ts_core_exit(void);
+int goodix_ts_core_release(struct goodix_ts_core *core_data);
+void goodix_ts_dev_release(void);
+
 void goodix_msg_printf(const char *fmt, ...);
 #ifndef CONFIG_TOUCHSCREEN_GOODIX_GTX8_UPDATE
 static inline int goodix_do_fw_update(int mode)

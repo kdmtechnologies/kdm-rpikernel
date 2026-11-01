@@ -1885,6 +1885,12 @@ static int goodix_i2c_probe(struct i2c_client *client)
 		ts_err("failed register platform driver, %d", r);
 		goto err_pdriver;
 	}
+	if (core_module_prob_sate == CORE_MODULE_PROB_FAILED) {
+		ts_err("core module probe failed, cleaning up");
+		goodix_ts_core_exit();
+		r = -ENODEV;
+		goto err_pdriver;
+	}
 	ts_info("i2c probe out");
 	return r;
 
@@ -1899,6 +1905,7 @@ err_pdev:
 
 static void goodix_i2c_remove(struct i2c_client *client)
 {
+	goodix_ts_core_exit();
 	if (goodix_pdev) {
 		platform_device_unregister(goodix_pdev);
 		kfree(goodix_pdev);

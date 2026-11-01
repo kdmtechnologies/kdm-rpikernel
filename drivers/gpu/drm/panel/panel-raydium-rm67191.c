@@ -324,10 +324,17 @@ static int rm67191_enable(struct rad_panel *panel)
 	usleep_range(15000, 17000);
 
 	/* Set DSI mode */
-	dsi_mode = (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) ? 0x0B : 0x00;
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
+		dsi_mode = 0x0B;
+	else if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+		dsi_mode = 0x08;
+	else if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		dsi_mode = 0x09;
+	else
+		dsi_mode = 0x00;
 	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xC2, dsi_mode }, 2);
 	if (ret < 0) {
-		dev_err(dev, "Failed to set DSI mode (%d)\n", ret);
+		dev_err(dev, "Failed to set DSI mode 0x%02x (%d)\n", dsi_mode, ret);
 		goto fail;
 	}
 	/* Set tear ON */
@@ -400,8 +407,15 @@ static int rm67199_enable(struct rad_panel *panel)
 	if (ret < 0)
 		goto fail;
 
-	/* Set DSI mode (0x0B for Video Mode, 0x00 for Command Mode) */
-	dsi_mode = (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) ? 0x0B : 0x00;
+	/* Set DSI mode */
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
+		dsi_mode = 0x0B;
+	else if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+		dsi_mode = 0x08;
+	else if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		dsi_mode = 0x09;
+	else
+		dsi_mode = 0x00;
 	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xC2, dsi_mode }, 2);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set DSI mode 0x%02x (%d)\n", dsi_mode, ret);

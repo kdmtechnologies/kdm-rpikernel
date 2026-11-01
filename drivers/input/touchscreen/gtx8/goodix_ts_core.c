@@ -1858,8 +1858,10 @@ int goodix_ts_stage2_init(struct goodix_ts_core *core_data)
 	}
 
 	r = ts_dev->hw_ops->read_version(ts_dev, &ts_dev->chip_version);
-	if (r < 0)
-		ts_info("failed read fw version info[ignore]");
+	if (r < 0) {
+		ts_err("failed read fw version info, aborting stage2");
+		return r;
+	}
 
 	/* alloc/config/register input device */
 	r = goodix_ts_input_dev_config(core_data);
@@ -1982,6 +1984,7 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	core_module_prob_sate = CORE_MODULE_PROB_SUCCESS;
 out:
 	if (r) {
+		platform_set_drvdata(pdev, NULL);
 		kfree(core_data);
 		core_data = NULL;
 		core_module_prob_sate = CORE_MODULE_PROB_FAILED;
@@ -2048,6 +2051,11 @@ int goodix_ts_core_init(void)
 
 	goodix_debugfs_init();
 	return platform_driver_register(&goodix_ts_driver);
+}
+
+void goodix_ts_core_exit(void)
+{
+	platform_driver_unregister(&goodix_ts_driver);
 }
 
 /* uninit module manually */

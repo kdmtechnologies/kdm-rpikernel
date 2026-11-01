@@ -2037,8 +2037,11 @@ static struct platform_driver goodix_ts_driver = {
 	.id_table = ts_core_ids,
 };
 
+static bool goodix_ts_driver_registered;
+
 int goodix_ts_core_init(void)
 {
+	int ret;
 	ts_info("Core layer init");
 	if (!goodix_modules.initilized) {
 		/* this may init by outer modules register event */
@@ -2050,12 +2053,18 @@ int goodix_ts_core_init(void)
 	}
 
 	goodix_debugfs_init();
-	return platform_driver_register(&goodix_ts_driver);
+	ret = platform_driver_register(&goodix_ts_driver);
+	if (!ret)
+		goodix_ts_driver_registered = true;
+	return ret;
 }
 
 void goodix_ts_core_exit(void)
 {
-	platform_driver_unregister(&goodix_ts_driver);
+	if (goodix_ts_driver_registered) {
+		goodix_ts_driver_registered = false;
+		platform_driver_unregister(&goodix_ts_driver);
+	}
 }
 
 /* uninit module manually */
@@ -2063,7 +2072,7 @@ int goodix_ts_core_release(struct goodix_ts_core *core_data)
 {
 	ts_info("goodix core module removed");
 
-	platform_driver_unregister(&goodix_ts_driver);
+	goodix_ts_core_exit();
 	goodix_ts_dev_release();
 	return 0;
 }

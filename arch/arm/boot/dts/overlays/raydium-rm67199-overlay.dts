@@ -91,7 +91,7 @@
       #size-cells = <0>;
 
       gt9886: gt9886@5d {
-        status = "okay";
+        status = "disabled";
         compatible = "goodix,gt9886";
         reg = <0x5d>;
         pinctrl-names = "default";
@@ -114,7 +114,7 @@
       touch_pins: touch_pins {
         brcm,pins = <22 27>; // IRQ and RESET pins
         brcm,function = <0 1>; // input, output
-        brcm,pull = <0 0>; // no pull
+        brcm,pull = <2 0>; // pull-up on IRQ (prevents floating IRQ storm), no-pull on RESET
       };
     };
   };
@@ -185,6 +185,12 @@
         status = "okay";
       };
     };
+  };
+
+  __overrides__ {
+    touch = <&gt9886>,"status";
+    brightness = <&rpi_backlight>,"default-brightness-level:0";
+    rotation = <&display1>,"rotation:0";
   };
 
 };

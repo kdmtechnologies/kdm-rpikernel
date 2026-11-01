@@ -249,10 +249,11 @@ int goodix_i2c_test(struct goodix_ts_device *dev)
 #define TEST_LEN   1
 	struct i2c_client *client = to_i2c_client(dev->dev);
 	unsigned char test_buf[TEST_LEN + 1], addr_buf[2];
+	int ret;
 	struct i2c_msg msgs[] = {
 		{
 			.addr = client->addr,
-			.flags = !I2C_M_RD,
+			.flags = 0,
 			.buf = &addr_buf[0],
 			.len = TS_ADDR_LENGTH,
 		}, {
@@ -266,9 +267,12 @@ int goodix_i2c_test(struct goodix_ts_device *dev)
 	msgs[0].buf[0] = (TEST_ADDR >> 8) & 0xFF;
 	msgs[0].buf[1] = TEST_ADDR & 0xFF;
 
-	if (likely(i2c_transfer(client->adapter, msgs, 2) == 2))
+	ret = i2c_transfer(client->adapter, msgs, 2);
+	if (likely(ret == 2))
 		return 0;
 
+	ts_err("i2c_test failed on addr 0x%02x (adapter %s), ret: %d",
+	       client->addr, client->adapter ? client->adapter->name : "NULL", ret);
 	/* test failed */
 	return -EINVAL;
 }

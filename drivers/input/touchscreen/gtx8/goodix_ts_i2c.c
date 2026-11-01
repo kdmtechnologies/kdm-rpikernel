@@ -280,14 +280,22 @@ static int goodix_ts_dev_confirm(struct goodix_ts_device *ts_dev)
 {
 #define DEV_CONFIRM_RETRY 3
 	int retry;
+	struct i2c_client *client = to_i2c_client(ts_dev->dev);
 
 	for (retry = 0; retry < DEV_CONFIRM_RETRY; retry++) {
+		if (gpio_is_valid(ts_dev->board_data.irq_gpio)) {
+			gpio_direction_output(ts_dev->board_data.irq_gpio,
+					      client->addr == 0x14 ? 1 : 0);
+		}
 		gpio_direction_output(ts_dev->board_data.reset_gpio, 0);
-		udelay(2000);
+		msleep(20);
 		gpio_direction_output(ts_dev->board_data.reset_gpio, 1);
-		mdelay(5);
+		msleep(10);
+		if (gpio_is_valid(ts_dev->board_data.irq_gpio))
+			gpio_direction_input(ts_dev->board_data.irq_gpio);
+		msleep(50);
 		if (!goodix_i2c_test(ts_dev)) {
-			msleep(95);
+			msleep(50);
 			return 0;
 		}
 	}
@@ -1269,13 +1277,21 @@ int goodix_hw_reset(struct goodix_ts_device *dev)
 {
 	u8 data[2] = {0x00};
 	int r = 0;
+	struct i2c_client *client = to_i2c_client(dev->dev);
 
 	ts_info("HW reset");
 
+	if (gpio_is_valid(dev->board_data.irq_gpio)) {
+		gpio_direction_output(dev->board_data.irq_gpio,
+				      client->addr == 0x14 ? 1 : 0);
+	}
 	gpio_direction_output(dev->board_data.reset_gpio, 0);
-	udelay(2000);
+	msleep(20);
 	gpio_direction_output(dev->board_data.reset_gpio, 1);
-	msleep(100);
+	msleep(10);
+	if (gpio_is_valid(dev->board_data.irq_gpio))
+		gpio_direction_input(dev->board_data.irq_gpio);
+	msleep(80);
 
 	/*init dynamic esd*/
 	if (dev->reg.esd) {

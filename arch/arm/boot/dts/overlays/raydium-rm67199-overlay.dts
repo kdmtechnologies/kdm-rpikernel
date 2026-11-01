@@ -84,7 +84,7 @@
 	};
 
   fragment@2 {
-    target = <&i2c3>;
+    target = <&i2c0>;
     __overlay__ {
       status = "okay";
       #address-cells = <1>;
@@ -184,6 +184,13 @@
         power-supply = <&vdd_3v3_reg>;
         status = "okay";
       };
+    };
+  };
+
+  fragment@7 {
+    target = <&i2c0mux>;
+    __overlay__ {
+      pinctrl-0 = <&i2c0_gpio44>;
     };
   };
 

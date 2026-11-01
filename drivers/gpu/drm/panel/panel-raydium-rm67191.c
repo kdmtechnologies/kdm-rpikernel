@@ -381,6 +381,7 @@ static int rm67199_enable(struct rad_panel *panel)
 {
 	struct mipi_dsi_device *dsi = panel->dsi;
 	struct device *dev = &dsi->dev;
+	u8 dsi_mode;
 	int color_format = color_format_from_dsi_format(dsi->format);
 	int ret;
 
@@ -399,10 +400,11 @@ static int rm67199_enable(struct rad_panel *panel)
 	if (ret < 0)
 		goto fail;
 
-	/* Set DSI mode (0x08 as per vendor specification) */
-	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xC2, 0x08 }, 2);
+	/* Set DSI mode (0x0B for Video Mode, 0x00 for Command Mode) */
+	dsi_mode = (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) ? 0x0B : 0x00;
+	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xC2, dsi_mode }, 2);
 	if (ret < 0) {
-		dev_err(dev, "Failed to set DSI mode (%d)\n", ret);
+		dev_err(dev, "Failed to set DSI mode 0x%02x (%d)\n", dsi_mode, ret);
 		goto fail;
 	}
 	/* Set tear ON */

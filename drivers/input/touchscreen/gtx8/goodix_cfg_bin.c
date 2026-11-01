@@ -164,7 +164,26 @@ static int goodix_cfg_bin_proc(struct goodix_ts_core *core_data)
 	/*get cfg_bin from file system*/
 	r = goodix_read_cfg_bin(ts_dev->dev, cfg_bin);
 	if (r < 0) {
-		ts_err("Failed get valid config bin data");
+		ts_warn("Failed get valid config bin data, falling back to default registers");
+		ts_dev->reg.version_base = 0x8240;
+		ts_dev->reg.version_len = 1;
+		ts_dev->reg.pid = 0x8240;
+		ts_dev->reg.pid_len = 4;
+		ts_dev->reg.vid = 0x8244;
+		ts_dev->reg.vid_len = 2;
+		ts_dev->reg.sensor_id = 0x8246;
+		ts_dev->reg.sensor_id_mask = 0xFF;
+		ts_dev->reg.fw_mask = 0x8247;
+		ts_dev->reg.fw_status = 0x8248;
+		ts_dev->reg.cfg_addr = 0x8050;
+		ts_dev->reg.esd = 0x8043;
+		ts_dev->reg.command = 0x8040;
+		ts_dev->reg.coor = 0x824E;
+		ts_dev->reg.gesture = 0x8140;
+		ts_dev->reg.fw_request = 0x8044;
+		ts_dev->reg.proximity = 0x824E;
+		ts_dev->cfg_bin_state = CFG_BIN_STATE_NORMAL;
+		r = 0;
 		goto exit;
 	}
 	/*parse cfg bin*/

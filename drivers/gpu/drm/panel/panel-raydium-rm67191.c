@@ -365,20 +365,6 @@ static int rm67191_enable(struct rad_panel *panel)
 
 	usleep_range(5000, 7000);
 
-	/* Enable display brightness control (BCTRL=1, BL=1) */
-	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, (u8[]){ 0x24 }, 1);
-	if (ret < 0) {
-		dev_err(dev, "Failed to write control display (%d)\n", ret);
-		goto fail;
-	}
-
-	/* Set initial display brightness */
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, 0xD0);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set display brightness (%d)\n", ret);
-		goto fail;
-	}
-
 	ret = mipi_dsi_dcs_set_display_on(dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set display ON (%d)\n", ret);
@@ -472,20 +458,6 @@ static int rm67199_enable(struct rad_panel *panel)
 	 */
 	msleep(120);
 
-	/* Enable display brightness control (BCTRL=1, BL=1) */
-	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, (u8[]){ 0x24 }, 1);
-	if (ret < 0) {
-		dev_err(dev, "Failed to write control display (%d)\n", ret);
-		goto fail;
-	}
-
-	/* Set initial display brightness */
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, 0xD0);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set display brightness (%d)\n", ret);
-		goto fail;
-	}
-
 	ret = mipi_dsi_dcs_set_display_on(dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set display ON (%d)\n", ret);
@@ -509,21 +481,11 @@ fail:
 
 static int rad_panel_enable(struct drm_panel *panel)
 {
-	struct rad_panel *rad = to_rad_panel(panel);
-
-	if (rad->backlight)
-		backlight_enable(rad->backlight);
-
 	return 0;
 }
 
 static int rad_panel_disable(struct drm_panel *panel)
 {
-	struct rad_panel *rad = to_rad_panel(panel);
-
-	if (rad->backlight)
-		backlight_disable(rad->backlight);
-
 	return 0;
 }
 

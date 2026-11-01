@@ -727,6 +727,7 @@ int goodix_ts_irq_setup(struct goodix_ts_core *core_data);
 int goodix_ts_esd_init(struct goodix_ts_core *core);
 
 int goodix_ts_register_notifier(struct notifier_block *nb);
+int goodix_start_later_init(struct goodix_ts_core *ts_core);
 
 void goodix_msg_printf(const char *fmt, ...);
 #ifndef CONFIG_TOUCHSCREEN_GOODIX_GTX8_UPDATE

@@ -164,7 +164,7 @@ static int goodix_cfg_bin_proc(struct goodix_ts_core *core_data)
 	/*get cfg_bin from file system*/
 	r = goodix_read_cfg_bin(ts_dev->dev, cfg_bin);
 	if (r < 0) {
-		ts_warn("Failed get valid config bin data, falling back to default registers");
+		ts_info("Failed get valid config bin data, falling back to default registers");
 		ts_dev->reg.version_base = 0x8240;
 		ts_dev->reg.version_len = 1;
 		ts_dev->reg.pid = 0x8240;
@@ -182,7 +182,7 @@ static int goodix_cfg_bin_proc(struct goodix_ts_core *core_data)
 		ts_dev->reg.gesture = 0x8140;
 		ts_dev->reg.fw_request = 0x8044;
 		ts_dev->reg.proximity = 0x824E;
-		ts_dev->cfg_bin_state = CFG_BIN_STATE_NORMAL;
+		ts_dev->cfg_bin_state = CFG_BIN_STATE_INITIALIZED;
 		r = 0;
 		goto exit;
 	}

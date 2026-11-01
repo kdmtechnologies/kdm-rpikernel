@@ -609,23 +609,7 @@ static int rad_panel_get_modes(struct drm_panel *panel,
 
 static int rad_bl_get_brightness(struct backlight_device *bl)
 {
-	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
-	u16 brightness;
-	int ret;
-
-	if (!rad->prepared)
-		return 0;
-
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
-	if (ret < 0)
-		return ret;
-
-	bl->props.brightness = brightness;
-
-	return brightness & 0xff;
+	return bl->props.brightness;
 }
 
 static int rad_bl_update_status(struct backlight_device *bl)
@@ -638,9 +622,12 @@ static int rad_bl_update_status(struct backlight_device *bl)
 	if (!rad->prepared)
 		return 0;
 
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	ret = mipi_dsi_dcs_set_display_brightness(dsi, brightness);
+
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
 	if (ret < 0)
 		return ret;
 

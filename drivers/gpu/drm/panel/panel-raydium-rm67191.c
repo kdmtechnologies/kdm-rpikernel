@@ -165,7 +165,7 @@ struct rad_platform_data {
 };
 
 static const struct drm_display_mode default_mode = {
-	.clock = 132000,
+	.clock = 125000,
 	.hdisplay = 1080,
 	.hsync_start = 1080 + 20,
 	.hsync_end = 1080 + 20 + 2,
@@ -465,6 +465,11 @@ static int rm67199_enable(struct rad_panel *panel)
 	}
 
 	msleep(10);
+
+	/* Set initial safe AMOLED brightness (0x51 only; do not write 0x53) */
+	ret = mipi_dsi_dcs_set_display_brightness(dsi, 120);
+	if (ret < 0)
+		dev_warn(dev, "Failed to set initial brightness (%d)\n", ret);
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
@@ -775,7 +780,7 @@ static int rad_panel_probe(struct mipi_dsi_device *dsi)
 	if (!panel->panel.backlight) {
 		memset(&bl_props, 0, sizeof(bl_props));
 		bl_props.type = BACKLIGHT_RAW;
-		bl_props.brightness = 255;
+		bl_props.brightness = 120;
 		bl_props.max_brightness = 255;
 
 		panel->backlight = devm_backlight_device_register(dev, dev_name(dev),

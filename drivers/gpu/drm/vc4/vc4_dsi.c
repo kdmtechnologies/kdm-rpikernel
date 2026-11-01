@@ -797,12 +797,12 @@ static void vc4_dsi_ulps(struct vc4_dsi *dsi, bool ulps)
 }
 
 static u32
-dsi_hs_timing(u32 ui_ns, u32 ns, u32 ui)
+dsi_hs_timing(u32 ui_ps, u32 ns, u32 ui)
 {
 	/* The HS timings have to be rounded up to a multiple of 8
 	 * because we're using the byte clock.
 	 */
-	return roundup(ui + DIV_ROUND_UP(ns, ui_ns), 8);
+	return roundup(ui + (u32)DIV_ROUND_UP_ULL((u64)ns * 1000, ui_ps), 8);
 }
 
 /* ESC always runs at 100Mhz. */
@@ -1064,10 +1064,10 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 		return;
 	}
 
-	/* How many ns one DSI unit interval is.  Note that the clock
+	/* How many ps one DSI unit interval is.  Note that the clock
 	 * is DDR, so there's an extra divide by 2.
 	 */
-	ui_ns = DIV_ROUND_UP(500000000, hs_clock);
+	ui_ns = DIV_ROUND_UP_ULL(500000000000ULL, hs_clock);
 
 	DSI_PORT_WRITE(HS_CLT0,
 		       VC4_SET_FIELD(dsi_hs_timing(ui_ns, 262, 0),

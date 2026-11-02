@@ -1,0 +1,13 @@
+[Unit]
+Description=KDM Direct DRM/KMS Top-Right Status Overlay
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /run/kdm-osd
+ExecStart=/usr/local/bin/kdm-osd --rotate 270 --scale 1.0 --battery 75
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

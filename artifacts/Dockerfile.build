@@ -1,0 +1,20 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    crossbuild-essential-arm64 \
+    crossbuild-essential-armhf \
+    bc \
+    bison \
+    flex \
+    libssl-dev \
+    make \
+    libc6-dev \
+    libncurses5-dev \
+    git \
+    rsync \
+    kmod \
+    cpio \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /kernel

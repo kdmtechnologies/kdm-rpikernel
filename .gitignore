@@ -183,3 +183,7 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# Local build artifacts
+/artifacts/*
+!/artifacts/Dockerfile.build

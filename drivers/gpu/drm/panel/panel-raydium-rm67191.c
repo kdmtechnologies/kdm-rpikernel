@@ -471,10 +471,15 @@ static int rm67199_enable(struct rad_panel *panel)
 
 	msleep(10);
 
-	/* Set initial safe AMOLED brightness (0x51 only; do not write 0x53) */
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, 120);
-	if (ret < 0)
-		dev_warn(dev, "Failed to set initial brightness (%d)\n", ret);
+	/* Set initial safe AMOLED brightness (0x51 1-byte DCS short write) */
+	{
+		u8 val = 120;
+
+		ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+					 &val, 1);
+		if (ret < 0)
+			dev_warn(dev, "Failed to set initial brightness (%d)\n", ret);
+	}
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
@@ -588,18 +593,20 @@ static int rad_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
-	int brightness = backlight_get_brightness(bl);
+	u8 val = backlight_get_brightness(bl) & 0xff;
 	int ret = 0;
 
 	if (!rad->prepared)
 		return 0;
 
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, brightness);
-
+	/*
+	 * Send 1-parameter DCS Short Write (0x15) in High-Speed (HS) mode so
+	 * the 4-byte packet (~50 ns at 4x750 Mbps) fits inside the 416 ns HFP
+	 * blanking window without dropping to LPDT or stalling video scanout.
+	 */
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
+	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, &val, 1);
 	if (ret < 0)
 		return ret;
 

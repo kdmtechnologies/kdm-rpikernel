@@ -1,15 +1,21 @@
 CC      ?= gcc
 PKG_CFG ?= pkg-config
 
-CFLAGS  := -O2 -Wall -Wextra -std=c11 $(shell $(PKG_CFG) --cflags libdrm freetype2 libpng)
+CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE $(shell $(PKG_CFG) --cflags libdrm freetype2 libpng)
 LDFLAGS := $(shell $(PKG_CFG) --libs libdrm freetype2 libpng) -lm
 
 TARGET  := kdm-osd
+SRCS    := kdm_osd.c osd_canvas.c osd_icons.c osd_view.c osd_hw.c osd_touch.c osd_drm.c
+OBJS    := $(SRCS:.c=.o)
+HDRS    := osd_types.h osd_canvas.h osd_icons.h osd_view.h osd_hw.h osd_touch.h osd_drm.h
 
 all: $(TARGET)
 
-$(TARGET): kdm_osd.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+
+%.o: %.c $(HDRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
@@ -19,4 +25,4 @@ install: $(TARGET)
 	systemctl restart kdm-osd.service
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(OBJS)

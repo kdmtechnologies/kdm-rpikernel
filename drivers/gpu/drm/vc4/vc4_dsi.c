@@ -1338,11 +1338,14 @@ static ssize_t vc4_dsi_transfer(struct vc4_dsi *dsi,
 	DSI_PORT_WRITE(TXPKT1C, pktc);
 
 	if (!wait_for_completion_timeout(&dsi->xfer_completion,
+					 (DSI_PORT_READ(DISP0_CTRL) &
+					  DSI_DISP0_ENABLE) ?
+					 max(1UL, usecs_to_jiffies(2000)) :
 					 msecs_to_jiffies(500))) {
 		if (log_error) {
 			dev_err(&dsi->pdev->dev, "transfer interrupt wait timeout");
 			dev_err(&dsi->pdev->dev, "instat: 0x%08x, stat: 0x%08x\n",
-				DSI_PORT_READ(INT_STAT), DSI_PORT_READ(INT_STAT));
+				DSI_PORT_READ(INT_STAT), DSI_PORT_READ(STAT));
 		}
 		ret = -ETIMEDOUT;
 	} else {
@@ -1383,6 +1386,7 @@ static ssize_t vc4_dsi_transfer(struct vc4_dsi *dsi,
 		}
 	}
 
+	DSI_PORT_WRITE(TXPKT1C, 0);
 	return ret;
 
 reset_fifo_and_return:
@@ -1391,9 +1395,17 @@ reset_fifo_and_return:
 
 	DSI_PORT_WRITE(TXPKT1C, DSI_PORT_READ(TXPKT1C) & ~DSI_TXPKT1C_CMD_EN);
 	udelay(1);
-	DSI_PORT_WRITE(CTRL,
-		       DSI_PORT_READ(CTRL) |
-		       DSI_PORT_BIT(CTRL_RESET_FIFOS));
+	if ((DSI_PORT_READ(DISP0_CTRL) & DSI_DISP0_ENABLE) && !pix_fifo_len) {
+		u32 clr_bits = DSI_PORT_BIT(CTRL_CLR_CDF);
+
+		if (dsi->variant->port == 1)
+			clr_bits |= DSI1_CTRL_CLR_RXF;
+		DSI_PORT_WRITE(CTRL, DSI_PORT_READ(CTRL) | clr_bits);
+	} else {
+		DSI_PORT_WRITE(CTRL,
+			       DSI_PORT_READ(CTRL) |
+			       DSI_PORT_BIT(CTRL_RESET_FIFOS));
+	}
 
 	DSI_PORT_WRITE(TXPKT1C, 0);
 	DSI_PORT_WRITE(INT_EN, DSI_PORT_BIT(INTERRUPTS_ALWAYS_ENABLED));
@@ -1427,8 +1439,21 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 
 			ret = vc4_dsi_transfer(dsi, msg, true);
 		} else {
-			DRM_ERROR("DSI transfer failed whilst in HS mode stat: 0x%08x\n",
-				  stat);
+			/* In active HS video mode, a command write that raced
+			 * with the per-frame LP-STOP blanking boundary has had
+			 * its command FIFO reset without disturbing the pixel
+			 * FIFO; wait past the blanking window and retry.
+			 */
+			int retry;
+
+			for (retry = 0; retry < 5 && ret == -ETIMEDOUT; retry++) {
+				DSI_PORT_WRITE(STAT, DSI_PORT_BIT(STAT_ERR_CONT_LP1));
+				usleep_range(200, 400);
+				ret = vc4_dsi_transfer(dsi, msg, retry == 4);
+			}
+			if (ret < 0)
+				DRM_ERROR("DSI transfer failed whilst in HS mode stat: 0x%08x\n",
+					  stat);
 		}
 	}
 	return ret;

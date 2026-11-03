@@ -12,8 +12,8 @@
 
 #include "fb_internal.h"
 
-bool fb_center_logo __read_mostly;
-int fb_logo_count __read_mostly = -1;
+bool fb_center_logo __read_mostly = true;
+int fb_logo_count __read_mostly = 1;
 static int fullscreen_logo_enabled;
 static char *fullscreen_logo_path;
 
@@ -492,26 +492,31 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 	u32 *palette = NULL, *saved_pseudo_palette = NULL;
 	unsigned char *logo_new = NULL, *logo_rotate = NULL;
 	struct fb_image image;
+	bool used_file_logo = false;
 
 	/* Return if the frame buffer is not mapped or suspended */
 	if (logo == NULL || info->state != FBINFO_STATE_RUNNING ||
 	    info->fbops->owner)
 		return 0;
 
-	if (fullscreen_logo_enabled) {
+	if (fullscreen_logo_enabled && fullscreen_logo_path) {
 		palette = kzalloc(256 * 4, GFP_KERNEL);
-		if (!palette)
-			return 0;
-
-		if (fb_set_logo_from_file(info, fullscreen_logo_path,
-					  &image, palette)) {
-			kfree(palette);
-			return 0;
+		if (palette) {
+			if (!fb_set_logo_from_file(info, fullscreen_logo_path,
+						   &image, palette)) {
+				saved_pseudo_palette = info->pseudo_palette;
+				info->pseudo_palette = palette;
+				used_file_logo = true;
+			} else {
+				kfree(palette);
+				palette = NULL;
+			}
 		}
+	}
 
-		saved_pseudo_palette = info->pseudo_palette;
-		info->pseudo_palette = palette;
-	} else {
+	if (!used_file_logo) {
+		rotate = FB_ROTATE_UR;
+		n = 1;
 		image.depth = 8;
 		image.data = logo->data;
 
@@ -574,10 +579,10 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 				fb_rotate_logo(info, logo_rotate, &image, rotate);
 		}
 	}
-	if (fullscreen_logo_enabled) {
-		// Fullscreen logo data may not fill screen
-		// Fill remainder of screen with border color of logo for continuous feel
-		u32 fill_color = image.data[0];
+	if (used_file_logo || fb_center_logo) {
+		// Fullscreen/centered logo data may not fill screen
+		// Fill remainder of screen with black/border color for continuous feel
+		u32 fill_color = used_file_logo ? image.data[0] : 0;
 		struct fb_fillrect region;
 
 		region.color = fill_color;
@@ -596,7 +601,7 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 	kfree(palette);
 	if (saved_pseudo_palette != NULL)
 		info->pseudo_palette = saved_pseudo_palette;
-	if (fullscreen_logo_enabled)
+	if (used_file_logo)
 		kfree(image.data);
 	kfree(logo_new);
 	kfree(logo_rotate);
@@ -688,6 +693,9 @@ int fb_prepare_logo(struct fb_info *info, int rotate)
 
 	if (!fb_logo.logo)
 		return 0;
+
+	if (fb_center_logo)
+		rotate = FB_ROTATE_UR;
 
 	if (rotate == FB_ROTATE_UR || rotate == FB_ROTATE_UD)
 		yres = info->var.yres;

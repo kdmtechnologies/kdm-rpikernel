@@ -80,6 +80,7 @@
 #include <linux/crc32.h> /* For counting font checksums */
 #include <linux/uaccess.h>
 #include <linux/vga_switcheroo.h>
+#include <linux/reboot.h>
 #include <asm/irq.h>
 
 #include "fbcon.h"
@@ -168,14 +169,15 @@ static char fontname[40];
 static int info_idx = -1;
 
 /* console rotation */
-static int initial_rotation = -1;
+static int initial_rotation = FB_ROTATE_UR;
 static int margin_color;
 
 static const struct consw fb_con;
 
 #define advance_row(p, delta) (unsigned short *)((unsigned long)(p) + (delta) * vc->vc_size_row)
 
-static bool fbcon_cursor_blink = true;
+static bool fbcon_cursor_blink = false;
+static bool fbcon_silent = true;
 
 #define divides(a, b)	((!(a) || (b)%(a)) ? 0 : 1)
 
@@ -609,9 +611,13 @@ static void fbcon_prepare_logo(struct vc_data *vc, struct fb_info *info,
 	if (fb_get_color_depth(&info->var, &info->fix) == 1)
 		erase &= ~0x400;
 	logo_height = fb_prepare_logo(info, par->rotate);
-	if (fullscreen_logo_enabled)
+	if (fullscreen_logo_enabled || fb_center_logo)
 		logo_height = info->var.yres - vc->vc_font.height;
 	logo_lines = DIV_ROUND_UP(logo_height, vc->vc_font.height);
+	if (logo_lines > vc->vc_bottom)
+		logo_lines = vc->vc_bottom;
+	if (logo_lines > rows)
+		logo_lines = rows;
 	q = (unsigned short *) (vc->vc_origin +
 				vc->vc_size_row * rows);
 	step = logo_lines * cols;
@@ -1048,10 +1054,6 @@ static void fbcon_init(struct vc_data *vc, bool init)
 
 	info = fbcon_info_from_console(vc->vc_num);
 
-	if (logo_shown < 0 && console_loglevel <= CONSOLE_LOGLEVEL_QUIET &&
-	    !fullscreen_logo_enabled)
-		logo_shown = FBCON_LOGO_DONTSHOW;
-
 	if (vc != svc || logo_shown == FBCON_LOGO_DONTSHOW ||
 	    (info->fix.type == FB_TYPE_TEXT))
 		logo = 0;
@@ -1292,6 +1294,9 @@ static void __fbcon_clear(struct vc_data *vc, unsigned int sy, unsigned int sx,
 	if (!fbcon_is_active(vc, info))
 		return;
 
+	if (fbcon_silent && !console_blanked)
+		return;
+
 	if (!height || !width)
 		return;
 
@@ -1332,6 +1337,9 @@ static void fbcon_putcs(struct vc_data *vc, const u16 *s, unsigned int count,
 	struct fbcon_display *p = &fb_display[vc->vc_num];
 	struct fbcon_par *par = info->fbcon_par;
 
+	if (fbcon_silent)
+		return;
+
 	if (fbcon_is_active(vc, info))
 		par->putcs(vc, info, s, count, real_y(p, ypos), xpos,
 			   get_fg_color(vc, info, scr_readw(s)),
@@ -1343,6 +1351,9 @@ static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
 	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
 	struct fbcon_par *par = info->fbcon_par;
 
+	if (fbcon_silent)
+		return;
+
 	if (fbcon_is_active(vc, info))
 		par->clear_margins(vc, info, margin_color, bottom_only);
 }
@@ -1352,6 +1363,9 @@ static void fbcon_cursor(struct vc_data *vc, bool enable)
 	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
 	struct fbcon_par *par = info->fbcon_par;
  	int c = scr_readw((u16 *) vc->vc_pos);
+
+	if (fbcon_silent)
+		return;
 
 	par->cur_blink_jiffies = msecs_to_jiffies(vc->vc_cur_blink_ms);
 
@@ -1759,7 +1773,7 @@ static void fbcon_bmove(struct vc_data *vc, int sy, int sx, int dy, int dx,
 	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
 	struct fbcon_display *p = &fb_display[vc->vc_num];
 
-	if (!fbcon_is_active(vc, info))
+	if (!fbcon_is_active(vc, info) || fbcon_silent)
 		return;
 
 	if (!width || !height)
@@ -1783,7 +1797,7 @@ static bool fbcon_scroll(struct vc_data *vc, unsigned int t, unsigned int b,
 	struct fbcon_display *p = &fb_display[vc->vc_num];
 	int scroll_partial = info->flags & FBINFO_PARTIAL_PAN_OK;
 
-	if (!fbcon_is_active(vc, info))
+	if (!fbcon_is_active(vc, info) || fbcon_silent)
 		return true;
 
 	fbcon_cursor(vc, false);
@@ -3403,6 +3417,38 @@ static void fbcon_start(void)
 #endif
 }
 
+static int fbcon_reboot_notifier(struct notifier_block *nb,
+				 unsigned long action, void *data)
+{
+	int i;
+
+	for (i = 0; i < FB_MAX; i++) {
+		struct fb_info *info = fbcon_registered_fb[i];
+
+		if (!info)
+			continue;
+		if (info->fbops && info->fbops->fb_fillrect) {
+			struct fb_fillrect region = {
+				.dx = 0,
+				.dy = 0,
+				.width = info->var.xres,
+				.height = info->var.yres,
+				.color = 0,
+				.rop = ROP_COPY,
+			};
+			info->fbops->fb_fillrect(info, &region);
+		} else if (info->screen_base && info->fix.smem_len) {
+			memset_io(info->screen_base, 0, info->fix.smem_len);
+		}
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block fbcon_reboot_nb = {
+	.notifier_call = fbcon_reboot_notifier,
+	.priority = INT_MAX,
+};
+
 void __init fb_console_init(void)
 {
 	int i;
@@ -3424,12 +3470,14 @@ void __init fb_console_init(void)
 
 	fbcon_start();
 	console_unlock();
+	register_reboot_notifier(&fbcon_reboot_nb);
 }
 
 #ifdef MODULE
 
 void __exit fb_console_exit(void)
 {
+	unregister_reboot_notifier(&fbcon_reboot_nb);
 #ifdef CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER
 	console_lock();
 	if (deferred_takeover)

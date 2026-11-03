@@ -257,7 +257,12 @@ static int rad_panel_unprepare(struct drm_panel *panel)
 	struct device *dev = &dsi->dev;
 	int ret;
 
+	if (!rad->prepared)
+		return 0;
+
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	mipi_dsi_dcs_set_display_brightness(dsi, 0);
 
 	usleep_range(10000, 12000);
 
@@ -824,6 +829,17 @@ static void rad_panel_remove(struct mipi_dsi_device *dsi)
 	drm_panel_remove(&rad->panel);
 }
 
+static void rad_panel_shutdown(struct mipi_dsi_device *dsi)
+{
+	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
+
+	if (!rad)
+		return;
+
+	drm_panel_disable(&rad->panel);
+	drm_panel_unprepare(&rad->panel);
+}
+
 static struct mipi_dsi_driver rad_panel_driver = {
 	.driver = {
 		.name = "panel-raydium-rm67191",
@@ -831,6 +847,7 @@ static struct mipi_dsi_driver rad_panel_driver = {
 	},
 	.probe = rad_panel_probe,
 	.remove = rad_panel_remove,
+	.shutdown = rad_panel_shutdown,
 };
 module_mipi_dsi_driver(rad_panel_driver);
 

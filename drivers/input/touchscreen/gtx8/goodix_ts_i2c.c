@@ -288,8 +288,11 @@ static int goodix_ts_dev_confirm(struct goodix_ts_device *ts_dev)
 #define DEV_CONFIRM_RETRY 3
 	int retry;
 	struct i2c_client *client = to_i2c_client(ts_dev->dev);
+	unsigned short orig_addr = client->addr;
+	unsigned short alt_addr = (orig_addr == 0x14) ? 0x5d : 0x14;
 
 	for (retry = 0; retry < DEV_CONFIRM_RETRY; retry++) {
+		client->addr = orig_addr;
 		if (gpio_is_valid(ts_dev->board_data.irq_gpio)) {
 			gpio_direction_output(ts_dev->board_data.irq_gpio,
 					      client->addr == 0x14 ? 1 : 0);
@@ -297,17 +300,32 @@ static int goodix_ts_dev_confirm(struct goodix_ts_device *ts_dev)
 		gpio_direction_output(ts_dev->board_data.reset_gpio, 0);
 		msleep(20);
 		gpio_direction_output(ts_dev->board_data.reset_gpio, 1);
-		msleep(10);
+		usleep_range(2000, 3000);
 		if (gpio_is_valid(ts_dev->board_data.irq_gpio))
 			gpio_direction_input(ts_dev->board_data.irq_gpio);
-		msleep(70);
+		msleep(80);
 		goodix_reset_doze_state();
 		if (!goodix_i2c_test(ts_dev)) {
 			goodix_set_i2c_doze_mode(ts_dev, false);
 			msleep(20);
 			return 0;
 		}
+
+		/*
+		 * GT9886 selects 0x5D (0xBA/0xBB) or 0x14 (0x28/0x29) via its
+		 * FPC-strapped I2C_ADDR_SEL pin. Probe the alternate address
+		 * automatically if the primary address did not ACK.
+		 */
+		client->addr = alt_addr;
+		if (!goodix_i2c_test(ts_dev)) {
+			ts_info("GT9886 detected at alternate I2C addr 0x%02x",
+				client->addr);
+			goodix_set_i2c_doze_mode(ts_dev, false);
+			msleep(20);
+			return 0;
+		}
 	}
+	client->addr = orig_addr;
 	return -EINVAL;
 }
 

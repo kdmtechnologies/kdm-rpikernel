@@ -282,6 +282,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	seeed-can-fd-hat-v1.dtbo \
 	seeed-can-fd-hat-v2.dtbo \
 	sh1106-spi.dtbo \
+	sh8801a.dtbo \
 	si446x-spi0.dtbo \
 	sixfab_m1m.dtbo \
 	smi.dtbo \

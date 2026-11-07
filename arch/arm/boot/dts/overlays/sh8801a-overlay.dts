@@ -1,0 +1,146 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+  fragment@0 {
+    target = <&dsi1>;
+
+    __overlay__ {
+      status = "okay";
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      port {
+        dsi1_out_port: endpoint {
+          remote-endpoint = <&panel_dsi_in1>;
+        };
+      };
+
+      display1: panel@0 {
+        status = "okay";
+        compatible = "sinowealth,sh8801a";
+        reg = <0>;
+
+        vdd-supply = <&vdd_3v3_reg>;
+        power-supply = <&vdd_3v3_reg>;
+        reset-gpios = <&gpio 17 1>;   // LCD RESX (Active Low)
+
+        dsi-lanes = <4>;
+
+        rotation = <270>;
+        pinctrl-names = "default";
+        video-mode = <2>;	// 0: burst mode
+                          // 1: non-burst mode with sync event
+                          // 2: non-burst mode with sync pulse
+        width-mm = <68>;
+        height-mm = <121>;
+        panel-width-mm = <68>;
+        panel-height-mm = <121>;
+
+        port {
+          panel_dsi_in1: endpoint {
+            remote-endpoint = <&dsi1_out_port>;
+          };
+        };
+
+        disp_timings0: display-timings {
+          native-mode = <&dsi1_timing0>;
+          dsi1_timing0: timing0 {
+            clock-frequency = <125000000>;
+            hactive = <1080>;
+            vactive = <1920>;
+            hfront-porch = <26>;
+            hsync-len = <2>;
+            hback-porch = <36>;
+            vfront-porch = <8>;
+            vsync-len = <4>;
+            vback-porch = <16>;
+            hsync-active = <0>;
+            vsync-active = <0>;
+            de-active = <0>;
+            pixelclk-active = <0>;
+          };
+        };
+      };
+    };
+  };
+
+  fragment@1 {
+    target = <&gpio>;
+    __overlay__ {
+      panel_pins: panel_pins {
+        brcm,pins = <17>;
+        brcm,function = <1>; // out
+        brcm,pull = <0>; // off
+      };
+    };
+  };
+
+  fragment@2 {
+    target = <&i2c_csi_dsi>;
+    __overlay__ {
+      status = "okay";
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      gt9886: gt9886@5d {
+        status = "okay";
+        compatible = "goodix,gt9886";
+        reg = <0x5d>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&touch_pins>;
+        interrupt-parent = <&gpio>;
+        interrupts = <22 2>; // GPIO22, IRQ_TYPE_EDGE_FALLING
+        goodix,irq-gpio = <&gpio 22 0>;
+        goodix,reset-gpio = <&gpio 27 0>;
+        goodix,irq-flags = <2>; /* 1:trigger rising, 2:trigger falling */
+        goodix,panel-max-x = <1080>;
+        goodix,panel-max-y = <1920>;
+        goodix,panel-max-w = <255>;
+      };
+    };
+  };
+
+  fragment@3 {
+    target = <&gpio>;
+    __overlay__ {
+      touch_pins: touch_pins {
+        brcm,pins = <22 27>; // TSP_ATTN (IRQ) and TSP_RESET pins
+        brcm,function = <0 1>; // input, output
+        brcm,pull = <2 0>; // pull-up on IRQ, no-pull on RESET
+      };
+    };
+  };
+
+  fragment@4 {
+    target = <&i2c0if>;
+    __overlay__ {
+      status = "okay";
+    };
+  };
+
+  fragment@5 {
+    target = <&i2c0mux>;
+    __overlay__ {
+      status = "okay";
+    };
+  };
+
+  fragment@6 {
+    target = <&i2c0_gpio44>;
+    __overlay__ {
+      brcm,pull = <2>; // Enable internal pull-ups on GPIO44/45 (SDA0/SCL0)
+    };
+  };
+
+  __overrides__ {
+    touch = <&gt9886>,"status";
+    touch_addr = <&gt9886>,"reg:0";
+    rotation = <&display1>,"rotation:0";
+    swapxy = <&gt9886>,"goodix,swap-axis?";
+    invertx = <&gt9886>,"goodix,x2x?";
+    inverty = <&gt9886>,"goodix,y2y?";
+  };
+};

@@ -177,8 +177,10 @@ int main(int argc, char **argv) {
     int land_w = (cfg.rotate == 90 || cfg.rotate == 270) ? drm.crtc_h : drm.crtc_w;
     int land_h = (cfg.rotate == 90 || cfg.rotate == 270) ? drm.crtc_w : drm.crtc_h;
 
-    printf("kdm-osd: attached to /dev/dri/card%d CRTC %u (%dx%d) overlay plane %u (rotate=%d)\n",
-           drm.card_minor, drm.crtc_id, drm.crtc_w, drm.crtc_h, drm.plane_id, cfg.rotate);
+    printf("kdm-osd: attached to /dev/dri/card%d CRTC %u (%dx%d) UI plane %u, Dimmer plane %u (rotate=%d)\n",
+           drm.card_minor, drm.crtc_id, drm.crtc_w, drm.crtc_h,
+           drm.plane_id, drm.dim_plane_id, cfg.rotate);
+    fflush(stdout);
 
     uint64_t last_periodic_ms = 0;
     bool need_redraw = true;
@@ -252,14 +254,16 @@ int main(int argc, char **argv) {
             last_periodic_ms = now;
             char prev_time[32];
             snprintf(prev_time, sizeof(prev_time), "%s", st.time_str);
-            int prev_wifi = st.wifi_bars;
-            int prev_bat  = st.battery_pct;
-            bool prev_chg = st.charging;
+            int prev_wifi     = st.wifi_bars;
+            bool prev_wifi_qs = st.qs_active[OSD_QS_WIFI];
+            int prev_bat      = st.battery_pct;
+            bool prev_chg     = st.charging;
 
             osd_hw_update_status(&hw, &cfg, &st);
 
             if (strcmp(prev_time, st.time_str) != 0 ||
                 prev_wifi != st.wifi_bars ||
+                prev_wifi_qs != st.qs_active[OSD_QS_WIFI] ||
                 prev_bat != st.battery_pct ||
                 prev_chg != st.charging) {
                 st.dirty_kind = OSD_DIRTY_FULL;
@@ -286,6 +290,7 @@ int main(int argc, char **argv) {
 
     osd_touch_destroy(&touch);
     osd_drm_destroy(&drm);
+    osd_hw_destroy(&hw);
     osd_canvas_destroy(canvas);
     osd_font_destroy(&font);
     return 0;

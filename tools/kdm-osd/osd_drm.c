@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -24,39 +25,45 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#ifndef __NR_pidfd_open
-#define __NR_pidfd_open 434
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
 #endif
-#ifndef __NR_pidfd_getfd
-#define __NR_pidfd_getfd 438
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 438
 #endif
 
+static int sys_pidfd_open(pid_t pid, unsigned int flags) {
+    return (int)syscall(SYS_pidfd_open, pid, flags);
+}
+
+static int sys_pidfd_getfd(int pidfd, int targetfd, unsigned int flags) {
+    return (int)syscall(SYS_pidfd_getfd, pidfd, targetfd, flags);
+}
+
 static bool is_drm_master_fd(int fd) {
-    errno = 0;
-    if (drmAuthMagic(fd, 0) == 0)
-        return true;
-    return (errno == EINVAL);
+    struct drm_auth auth = { .magic = 0 };
+    return (ioctl(fd, DRM_IOCTL_AUTH_MAGIC, &auth) == 0 || errno == EINVAL);
 }
 
 static int borrow_active_drm_master_fd(int card_minor, pid_t *out_pid) {
-    char target_suffix[32];
-    snprintf(target_suffix, sizeof(target_suffix), "/dev/dri/card%d", card_minor);
+    char target_dev[64];
+    snprintf(target_dev, sizeof(target_dev), "/dev/dri/card%d", card_minor);
 
     DIR *proc = opendir("/proc");
     if (!proc)
         return -1;
 
-    pid_t self_pid = getpid();
+    pid_t self = getpid();
     struct dirent *pent;
     while ((pent = readdir(proc)) != NULL) {
         if (!isdigit((unsigned char)pent->d_name[0]))
             continue;
         pid_t pid = (pid_t)atoi(pent->d_name);
-        if (pid <= 1 || pid == self_pid)
+        if (pid <= 1 || pid == self)
             continue;
 
         char fd_dir_path[128];
-        snprintf(fd_dir_path, sizeof(fd_dir_path), "/proc/%d/fd", pid);
+        snprintf(fd_dir_path, sizeof(fd_dir_path), "/proc/%d/fd", (int)pid);
         DIR *fddir = opendir(fd_dir_path);
         if (!fddir)
             continue;
@@ -65,21 +72,21 @@ static int borrow_active_drm_master_fd(int card_minor, pid_t *out_pid) {
         while ((fent = readdir(fddir)) != NULL) {
             if (!isdigit((unsigned char)fent->d_name[0]))
                 continue;
-            char link_path[300], resolved[256];
-            snprintf(link_path, sizeof(link_path), "/proc/%d/fd/%.200s", pid, fent->d_name);
-            ssize_t len = readlink(link_path, resolved, sizeof(resolved) - 1);
+            char link_path[300], link_target[256];
+            snprintf(link_path, sizeof(link_path), "/proc/%d/fd/%.200s", (int)pid, fent->d_name);
+            ssize_t len = readlink(link_path, link_target, sizeof(link_target) - 1);
             if (len <= 0)
                 continue;
-            resolved[len] = '\0';
-            if (strcmp(resolved, target_suffix) != 0)
+            link_target[len] = '\0';
+            if (strcmp(link_target, target_dev) != 0)
                 continue;
 
-            int target_fd = atoi(fent->d_name);
-            int pidfd = (int)syscall(__NR_pidfd_open, pid, 0);
-            if (pidfd < 0)
+            int target_fd_num = atoi(fent->d_name);
+            int pfd = sys_pidfd_open(pid, 0);
+            if (pfd < 0)
                 continue;
-            int dup_fd = (int)syscall(__NR_pidfd_getfd, pidfd, target_fd, 0);
-            close(pidfd);
+            int dup_fd = sys_pidfd_getfd(pfd, target_fd_num, 0);
+            close(pfd);
             if (dup_fd < 0)
                 continue;
 
@@ -98,7 +105,9 @@ static int borrow_active_drm_master_fd(int card_minor, pid_t *out_pid) {
     return -1;
 }
 
-static void set_plane_zpos_max(int drm_fd, uint32_t plane_id) {
+static void set_plane_zpos_offset(int drm_fd, uint32_t plane_id, int offset_from_max) {
+    if (!plane_id)
+        return;
     drmModeObjectPropertiesPtr props =
         drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
     if (!props)
@@ -108,56 +117,67 @@ static void set_plane_zpos_max(int drm_fd, uint32_t plane_id) {
         if (!prop)
             continue;
         if (strcmp(prop->name, "zpos") == 0) {
+            uint64_t min_z = 1;
             uint64_t max_z = 255;
-            if ((prop->flags & DRM_MODE_PROP_RANGE) && prop->count_values >= 2)
+            if ((prop->flags & DRM_MODE_PROP_RANGE) && prop->count_values >= 2) {
+                min_z = prop->values[0];
                 max_z = prop->values[1];
+            }
+            uint64_t target_z = (max_z > (uint64_t)offset_from_max + min_z)
+                                ? (max_z - (uint64_t)offset_from_max)
+                                : min_z;
             drmModeObjectSetProperty(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE,
-                                     prop->prop_id, max_z);
+                                     prop->prop_id, target_z);
         }
         drmModeFreeProperty(prop);
     }
     drmModeFreeObjectProperties(props);
 }
 
-static bool allocate_single_dumb_buffer(osd_drm_t *drm, osd_drm_buf_t *buf, int buf_w, int buf_h) {
+static bool allocate_single_dumb_buffer_ex(int fd, osd_drm_buf_t *buf, int buf_w, int buf_h,
+                                           uint32_t *out_pitch, uint64_t *out_size) {
     struct drm_mode_create_dumb creq = {
         .width  = (uint32_t)buf_w,
         .height = (uint32_t)buf_h,
         .bpp    = 32,
     };
-    if (drmIoctl(drm->fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0)
+    if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0)
         return false;
 
     struct drm_mode_map_dumb mreq = { .handle = creq.handle };
-    if (drmIoctl(drm->fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
+    if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
         return false;
 
-    void *map = mmap(NULL, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm->fd, mreq.offset);
+    void *map = mmap(NULL, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
     if (map == MAP_FAILED)
         return false;
 
     int dmabuf_fd = -1;
-    if (drmPrimeHandleToFD(drm->fd, creq.handle, DRM_CLOEXEC | DRM_RDWR, &dmabuf_fd) < 0) {
+    if (drmPrimeHandleToFD(fd, creq.handle, DRM_CLOEXEC | DRM_RDWR, &dmabuf_fd) < 0) {
         munmap(map, creq.size);
         return false;
     }
 
-    drm->buf_w        = buf_w;
-    drm->buf_h        = buf_h;
-    drm->pitch        = creq.pitch;
-    drm->size         = creq.size;
+    if (out_pitch)
+        *out_pitch = creq.pitch;
+    if (out_size)
+        *out_size = creq.size;
     buf->handle       = creq.handle;
     buf->dmabuf_fd    = dmabuf_fd;
     buf->map          = (uint32_t *)map;
     buf->cached_fb_id = 0;
-    memset(buf->map, 0, drm->size);
+    memset(buf->map, 0, creq.size);
     return true;
 }
 
 static bool allocate_dumb_buffers(osd_drm_t *drm, int buf_w, int buf_h) {
-    if (!allocate_single_dumb_buffer(drm, &drm->bufs[0], buf_w, buf_h))
+    drm->buf_w = buf_w;
+    drm->buf_h = buf_h;
+    if (!allocate_single_dumb_buffer_ex(drm->fd, &drm->bufs[0], buf_w, buf_h,
+                                        &drm->pitch, &drm->size))
         return false;
-    if (!allocate_single_dumb_buffer(drm, &drm->bufs[1], buf_w, buf_h)) {
+    if (!allocate_single_dumb_buffer_ex(drm->fd, &drm->bufs[1], buf_w, buf_h,
+                                        &drm->pitch, &drm->size)) {
         munmap(drm->bufs[0].map, drm->size);
         drm->bufs[0].map = NULL;
         close(drm->bufs[0].dmabuf_fd);
@@ -165,16 +185,32 @@ static bool allocate_dumb_buffers(osd_drm_t *drm, int buf_w, int buf_h) {
         return false;
     }
     drm->front_idx = 0;
+
+    if (drm->dim_plane_id != 0) {
+        if (!allocate_single_dumb_buffer_ex(drm->fd, &drm->dim_bufs[0],
+                                            OSD_DIM_BUF_SZ, OSD_DIM_BUF_SZ,
+                                            &drm->dim_pitch, &drm->dim_size) ||
+            !allocate_single_dumb_buffer_ex(drm->fd, &drm->dim_bufs[1],
+                                            OSD_DIM_BUF_SZ, OSD_DIM_BUF_SZ,
+                                            &drm->dim_pitch, &drm->dim_size)) {
+            drm->dim_plane_id = 0;
+        }
+    }
+    drm->dim_front_idx = 0;
+    drm->last_dim_pct  = -1;
     return true;
 }
 
 bool osd_drm_init(osd_drm_t *drm, const char *explicit_card, int buf_w, int buf_h) {
     memset(drm, 0, sizeof(*drm));
-    drm->fd                = -1;
-    drm->bufs[0].dmabuf_fd = -1;
-    drm->bufs[1].dmabuf_fd = -1;
-    drm->cached_master_fd  = -1;
-    drm->cached_master_pid = -1;
+    drm->fd                    = -1;
+    drm->bufs[0].dmabuf_fd     = -1;
+    drm->bufs[1].dmabuf_fd     = -1;
+    drm->dim_bufs[0].dmabuf_fd = -1;
+    drm->dim_bufs[1].dmabuf_fd = -1;
+    drm->cached_master_fd      = -1;
+    drm->cached_master_pid     = -1;
+    drm->last_dim_pct          = -1;
 
     for (int i = 0; i < 4; i++) {
         char path[64];
@@ -225,6 +261,8 @@ bool osd_drm_init(osd_drm_t *drm, const char *explicit_card, int buf_w, int buf_
         }
 
         drmModePlaneResPtr pres = drmModeGetPlaneResources(fd);
+        uint32_t prev_plane    = 0;
+        uint32_t prev_stale_fb = 0;
         uint32_t best_plane    = 0;
         uint32_t best_stale_fb = 0;
         if (pres) {
@@ -249,6 +287,8 @@ bool osd_drm_init(osd_drm_t *drm, const char *explicit_card, int buf_w, int buf_
                             if (prop) {
                                 if (strcmp(prop->name, "type") == 0 &&
                                     props->prop_values[k] == DRM_PLANE_TYPE_OVERLAY) {
+                                    prev_plane    = best_plane;
+                                    prev_stale_fb = best_stale_fb;
                                     best_plane    = plane->plane_id;
                                     best_stale_fb = plane->fb_id;
                                 }
@@ -265,14 +305,25 @@ bool osd_drm_init(osd_drm_t *drm, const char *explicit_card, int buf_w, int buf_
         drmModeFreeResources(res);
 
         if (best_plane) {
-            drm->fd          = fd;
-            drm->card_minor  = i;
-            drm->crtc_id     = found_crtc;
-            drm->crtc_index  = found_idx;
-            drm->crtc_w      = cw;
-            drm->crtc_h      = ch;
-            drm->plane_id    = best_plane;
-            drm->stale_fb_id = best_stale_fb;
+            drm->fd         = fd;
+            drm->card_minor = i;
+            drm->crtc_id    = found_crtc;
+            drm->crtc_index = found_idx;
+            drm->crtc_w     = cw;
+            drm->crtc_h     = ch;
+
+            if (prev_plane != 0) {
+                /* Use second-highest overlay plane for UI, and topmost plane for full-screen LCD dimmer */
+                drm->plane_id        = prev_plane;
+                drm->stale_fb_id     = prev_stale_fb;
+                drm->dim_plane_id    = best_plane;
+                drm->dim_stale_fb_id = best_stale_fb;
+            } else {
+                drm->plane_id        = best_plane;
+                drm->stale_fb_id     = best_stale_fb;
+                drm->dim_plane_id    = 0;
+                drm->dim_stale_fb_id = 0;
+            }
 
             if (!allocate_dumb_buffers(drm, buf_w, buf_h)) {
                 close(drm->fd);
@@ -346,11 +397,6 @@ static void compute_plane_crop(const osd_drm_t *drm, const osd_config_t *cfg,
     int land_h = OSD_SCREEN_H;
 
     if (st->shade_open || st->shade_pull_px > 0.5f) {
-        /*
-         * Full-Screen Quick Settings Shade (with vertical slide-down offset):
-         * Display the bottom `pull_h` rows of the shade at the top `pull_h` rows
-         * of the landscape screen so the shade physically slides down with the finger.
-         */
         int pull_h = clampi((int)roundf(st->shade_pull_px), 2, land_h);
         int off_y  = land_h - pull_h;
 
@@ -394,7 +440,6 @@ static void compute_plane_crop(const osd_drm_t *drm, const osd_config_t *cfg,
         return;
     }
 
-    /* Compact Top-Right Status Bar (+ optional standalone HUD popup) */
     int active_w = (st->vol_open || st->brt_open) ? st->hud_w : st->bar_w;
     int active_h = (st->vol_open || st->brt_open) ? st->hud_h : (cfg->margin_top + st->bar_h);
     active_w = clampi(active_w, 16, land_w);
@@ -439,7 +484,8 @@ static void compute_plane_crop(const osd_drm_t *drm, const osd_config_t *cfg,
     }
 }
 
-static bool ensure_fb_registered(osd_drm_t *drm, int use_fd, bool borrowed, osd_drm_buf_t *buf) {
+static bool ensure_fb_registered_ex(int use_fd, bool borrowed, osd_drm_buf_t *buf,
+                                    int w, int h, uint32_t pitch) {
     if (buf->cached_fb_id != 0)
         return true;
     uint32_t imported_handle = buf->handle;
@@ -448,11 +494,62 @@ static bool ensure_fb_registered(osd_drm_t *drm, int use_fd, bool borrowed, osd_
             return false;
     }
     uint32_t handles[4] = { imported_handle, 0, 0, 0 };
-    uint32_t pitches[4] = { drm->pitch, 0, 0, 0 };
+    uint32_t pitches[4] = { pitch, 0, 0, 0 };
     uint32_t offsets[4] = { 0, 0, 0, 0 };
-    return (drmModeAddFB2(use_fd, (uint32_t)drm->buf_w, (uint32_t)drm->buf_h,
+    return (drmModeAddFB2(use_fd, (uint32_t)w, (uint32_t)h,
                           DRM_FORMAT_ARGB8888, handles, pitches, offsets,
                           &buf->cached_fb_id, 0) == 0);
+}
+
+static void update_hardware_lcd_dimmer(osd_drm_t *drm, int use_fd, bool borrowed, int brightness_pct) {
+    if (!drm->dim_plane_id)
+        return;
+
+    int pct = clampi(brightness_pct, 0, 100);
+    if (pct == drm->last_dim_pct)
+        return;
+
+    if (pct >= 100) {
+        drmModeSetPlane(use_fd, drm->dim_plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        drm->last_dim_pct = 100;
+    } else {
+        /*
+         * Map 99%..0% brightness to 2..216 alpha (up to 85% dimming at 0% brightness
+         * so the LCD dims deeply while remaining readable to slide brightness back up).
+         */
+        uint8_t dim_alpha = (uint8_t)clampi(((100 - pct) * 216) / 100, 2, 216);
+        uint32_t argb     = ((uint32_t)dim_alpha << 24);
+
+        int d_idx = drm->dim_front_idx ^ 1;
+        osd_drm_buf_t *dbuf = &drm->dim_bufs[d_idx];
+        if (!dbuf->map)
+            return;
+
+        size_t total_px = (size_t)(drm->dim_size / 4);
+        for (size_t i = 0; i < total_px; i++)
+            dbuf->map[i] = argb;
+
+        if (ensure_fb_registered_ex(use_fd, borrowed, dbuf,
+                                    OSD_DIM_BUF_SZ, OSD_DIM_BUF_SZ, drm->dim_pitch)) {
+            if (drmModeSetPlane(use_fd, drm->dim_plane_id, drm->crtc_id, dbuf->cached_fb_id, 0,
+                                0, 0, (uint32_t)drm->crtc_w, (uint32_t)drm->crtc_h,
+                                0, 0,
+                                (uint32_t)OSD_DIM_BUF_SZ << 16,
+                                (uint32_t)OSD_DIM_BUF_SZ << 16) == 0) {
+                drm->dim_front_idx = d_idx;
+                drm->last_dim_pct  = pct;
+            }
+        }
+    }
+
+    if (drm->dim_stale_fb_id != 0 &&
+        drm->dim_stale_fb_id != drm->dim_bufs[0].cached_fb_id &&
+        drm->dim_stale_fb_id != drm->dim_bufs[1].cached_fb_id &&
+        drm->dim_stale_fb_id != drm->bufs[0].cached_fb_id &&
+        drm->dim_stale_fb_id != drm->bufs[1].cached_fb_id) {
+        drmModeRmFB(use_fd, drm->dim_stale_fb_id);
+        drm->dim_stale_fb_id = 0;
+    }
 }
 
 void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
@@ -472,11 +569,14 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
         if (drm->cached_master_pid <= 0 || kill(drm->cached_master_pid, 0) != 0 ||
             !is_drm_master_fd(drm->cached_master_fd)) {
             close(drm->cached_master_fd);
-            drm->cached_master_fd     = -1;
-            drm->cached_master_pid    = -1;
-            drm->bufs[0].cached_fb_id = 0;
-            drm->bufs[1].cached_fb_id = 0;
-            drm->zpos_set             = false;
+            drm->cached_master_fd         = -1;
+            drm->cached_master_pid        = -1;
+            drm->bufs[0].cached_fb_id     = 0;
+            drm->bufs[1].cached_fb_id     = 0;
+            drm->dim_bufs[0].cached_fb_id = 0;
+            drm->dim_bufs[1].cached_fb_id = 0;
+            drm->zpos_set                 = false;
+            drm->last_dim_pct             = -1;
         }
     }
 
@@ -484,11 +584,14 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
         pid_t mpid = -1;
         int mfd = borrow_active_drm_master_fd(drm->card_minor, &mpid);
         if (mfd >= 0) {
-            drm->cached_master_fd     = mfd;
-            drm->cached_master_pid    = mpid;
-            drm->bufs[0].cached_fb_id = 0;
-            drm->bufs[1].cached_fb_id = 0;
-            drm->zpos_set             = false;
+            drm->cached_master_fd         = mfd;
+            drm->cached_master_pid        = mpid;
+            drm->bufs[0].cached_fb_id     = 0;
+            drm->bufs[1].cached_fb_id     = 0;
+            drm->dim_bufs[0].cached_fb_id = 0;
+            drm->dim_bufs[1].cached_fb_id = 0;
+            drm->zpos_set                 = false;
+            drm->last_dim_pct             = -1;
         }
     }
 
@@ -498,9 +601,14 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
     if (!borrowed)
         drmSetMaster(drm->fd);
 
-    if (ensure_fb_registered(drm, use_fd, borrowed, target)) {
+    if (ensure_fb_registered_ex(use_fd, borrowed, target, drm->buf_w, drm->buf_h, drm->pitch)) {
         if (!drm->zpos_set) {
-            set_plane_zpos_max(use_fd, drm->plane_id);
+            if (drm->dim_plane_id != 0) {
+                set_plane_zpos_offset(use_fd, drm->plane_id, 1);
+                set_plane_zpos_offset(use_fd, drm->dim_plane_id, 0);
+            } else {
+                set_plane_zpos_offset(use_fd, drm->plane_id, 0);
+            }
             drm->zpos_set = true;
         }
 
@@ -522,6 +630,9 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
             drm->stale_fb_id = 0;
         }
     }
+
+    /* Update Hardware HVS Full-Screen LCD Dimmer Plane */
+    update_hardware_lcd_dimmer(drm, use_fd, borrowed, st->brightness_pct);
 
     if (!borrowed)
         drmDropMaster(drm->fd);
@@ -548,10 +659,17 @@ void osd_drm_destroy(osd_drm_t *drm) {
         drmSetMaster(drm->fd);
 
     drmModeSetPlane(use_fd, drm->plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (drm->dim_plane_id)
+        drmModeSetPlane(use_fd, drm->dim_plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
     for (int i = 0; i < 2; i++) {
         if (drm->bufs[i].cached_fb_id != 0) {
             drmModeRmFB(use_fd, drm->bufs[i].cached_fb_id);
             drm->bufs[i].cached_fb_id = 0;
+        }
+        if (drm->dim_bufs[i].cached_fb_id != 0) {
+            drmModeRmFB(use_fd, drm->dim_bufs[i].cached_fb_id);
+            drm->dim_bufs[i].cached_fb_id = 0;
         }
     }
     if (!borrowed)
@@ -569,6 +687,14 @@ void osd_drm_destroy(osd_drm_t *drm) {
         if (drm->bufs[i].dmabuf_fd >= 0) {
             close(drm->bufs[i].dmabuf_fd);
             drm->bufs[i].dmabuf_fd = -1;
+        }
+        if (drm->dim_bufs[i].map) {
+            munmap(drm->dim_bufs[i].map, drm->dim_size);
+            drm->dim_bufs[i].map = NULL;
+        }
+        if (drm->dim_bufs[i].dmabuf_fd >= 0) {
+            close(drm->dim_bufs[i].dmabuf_fd);
+            drm->dim_bufs[i].dmabuf_fd = -1;
         }
     }
     close(drm->fd);

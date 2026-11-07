@@ -220,7 +220,8 @@ bool osd_touch_process(osd_touch_t *tc, const osd_config_t *cfg,
                         osd_hw_update_status(hw, cfg, st);
                         tc->active_drag = OSD_DRAG_SHADE_CARD;
                         osd_touch_set_grab(tc, true);
-                        upgrade_dirty(st, (hit_qs == OSD_QS_WIFI) ? OSD_DIRTY_FULL : OSD_DIRTY_QS_ROW);
+                        upgrade_dirty(st, (hit_qs == OSD_QS_WIFI || hit_qs == OSD_QS_SOUND)
+                                          ? OSD_DIRTY_FULL : OSD_DIRTY_QS_ROW);
                         dirty = true;
                     }
                     /* 2. Check 2 Wide Pill Buttons ("Device control" / "Media output") */
@@ -340,7 +341,7 @@ bool osd_touch_process(osd_touch_t *tc, const osd_config_t *cfg,
                     st->qs_active[OSD_QS_SOUND] = (pct > 0);
                     if (st->shade_open) {
                         upgrade_dirty(st, (was_snd != st->qs_active[OSD_QS_SOUND])
-                                          ? OSD_DIRTY_QS_ROW : OSD_DIRTY_VOL_SLIDER);
+                                          ? OSD_DIRTY_FULL : OSD_DIRTY_VOL_SLIDER);
                     } else {
                         upgrade_dirty(st, OSD_DIRTY_FULL);
                     }

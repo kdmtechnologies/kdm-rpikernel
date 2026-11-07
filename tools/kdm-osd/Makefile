@@ -1,8 +1,8 @@
 CC      ?= gcc
 PKG_CFG ?= pkg-config
 
-CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE $(shell $(PKG_CFG) --cflags libdrm freetype2 libpng)
-LDFLAGS := $(shell $(PKG_CFG) --libs libdrm freetype2 libpng) -lm
+CFLAGS  := -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE $(shell $(PKG_CFG) --cflags libdrm freetype2 libpng alsa)
+LDFLAGS := $(shell $(PKG_CFG) --libs libdrm freetype2 libpng alsa) -lm
 
 TARGET  := kdm-osd
 SRCS    := kdm_osd.c osd_canvas.c osd_icons.c osd_view.c osd_hw.c osd_touch.c osd_drm.c

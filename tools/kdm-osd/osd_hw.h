@@ -34,8 +34,12 @@ typedef struct {
 
     uint64_t wifi_toggle_grace_until_ms;
 
+    int i2c_bat_fd;
+    bool has_max17055;
+
     struct timespec vol_mtime;
     struct timespec brt_mtime;
+    struct timespec bat_mtime;
 } osd_hw_t;
 
 void osd_hw_init(osd_hw_t *hw, const osd_config_t *cfg, osd_state_t *st);

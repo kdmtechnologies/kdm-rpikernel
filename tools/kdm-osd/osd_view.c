@@ -141,8 +141,9 @@ void osd_view_compute_layout(const osd_config_t *cfg, osd_state_t *st, const osd
     int wifi_sz = (int)roundf(24.0f * s);
     int bat_w   = (int)roundf(38.0f * s);
     int asc = 0, th = 0;
+    int max_pct_w  = osd_font_measure(font->face_bar, "100%", &asc, &th);
     int max_text_w = osd_font_measure(font->face_bar, "12:59PM", &asc, &th);
-    int bar_w = pad_x * 2 + wifi_sz + gap + bat_w + gap + max_text_w + 16;
+    int bar_w = pad_x * 2 + wifi_sz + gap + max_pct_w + (int)roundf(8.0f * s) + bat_w + gap + max_text_w + 16;
     bar_w = (bar_w + 7) & ~7;
 
     st->surf_w = OSD_SCREEN_W;
@@ -381,9 +382,14 @@ void osd_view_render_into(osd_canvas_t *c, const osd_config_t *cfg,
     int ascender = 0, text_h = 0;
     int text_w = osd_font_measure(font->face_bar, st->time_str, &ascender, &text_h);
 
+    char pct_str[16];
+    snprintf(pct_str, sizeof(pct_str), "%d%%", st->battery_pct);
+    int pct_w = osd_font_measure(font->face_bar, pct_str, &ascender, &text_h);
+
     float time_x   = (float)(OSD_SCREEN_W - pad_right - text_w);
     float bat_x    = time_x - gap - bat_w;
-    float wifi_x   = bat_x - gap - wifi_sz;
+    float pct_x    = bat_x - roundf(8.0f * s) - (float)pct_w;
+    float wifi_x   = pct_x - gap - wifi_sz;
     float center_y = (float)cfg->margin_top + st->bar_h * 0.5f;
 
     osd_icons_draw_wifi(c, wifi_x, center_y - wifi_sz * 0.5f, (float)wifi_sz,
@@ -392,6 +398,10 @@ void osd_view_render_into(osd_canvas_t *c, const osd_config_t *cfg,
                            st->battery_pct, st->charging);
 
     int baseline_y = (int)roundf(center_y + ascender * 0.5f - 1.0f * s);
+    osd_font_draw_text(c, font->face_bar, pct_str,
+                       (int)roundf(pct_x) + 1, baseline_y + 2, 0, 0, 0, 0.55f);
+    osd_font_draw_text(c, font->face_bar, pct_str,
+                       (int)roundf(pct_x), baseline_y, 248, 250, 252, 1.0f);
     osd_font_draw_text(c, font->face_bar, st->time_str,
                        (int)roundf(time_x) + 1, baseline_y + 2, 0, 0, 0, 0.55f);
     osd_font_draw_text(c, font->face_bar, st->time_str,

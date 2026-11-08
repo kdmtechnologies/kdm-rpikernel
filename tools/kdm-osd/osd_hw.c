@@ -8,13 +8,18 @@
 
 #include <alsa/asoundlib.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <linux/i2c-dev.h>
+#include <linux/i2c.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 static bool timespec_changed(const struct timespec *a, const struct timespec *b) {
     return (a->tv_sec != b->tv_sec) || (a->tv_nsec != b->tv_nsec);
@@ -270,7 +275,139 @@ static void set_system_wifi_enabled(bool enable) {
 }
 
 /* ==========================================================================
- * 3. Backlight & Runtime IPC Files
+ * 3. MAX17055 Fuel Gauge (/dev/i2c-1 @ 0x36)
+ *    Battery: Nintendo Switch Lite HDH-003 (3.8V nom / 4.35V max, 3570mAh, 13.6Wh)
+ *    Sense Resistor: YAGEO PS0306DRF7T0R01L (0.01 Ohm / 10 mOhm)
+ * ========================================================================== */
+
+#define MAX17055_I2C_ADDR       0x36
+#define MAX17055_DESIGN_CAP_LSB 7140U   /* 3570 mAh / 0.5 mAh (Rsense = 10 mOhm) */
+#define MAX17055_DQACC_LSB      223U    /* 7140 / 32 */
+#define MAX17055_DPACC_LSB      1599U   /* (223 * 51200) / 7140 for VChg > 4.275V */
+#define MAX17055_ICHGTERM_LSB   730U    /* ~114 mA / 0.15625 mA */
+#define MAX17055_VEMPTY_CFG     0xA561U /* 3.30V empty, 3.88V recovery */
+
+static bool max17055_read_reg(int fd, uint8_t reg, uint16_t *out_val) {
+    if (fd < 0)
+        return false;
+    uint8_t buf[2] = {0};
+    struct i2c_msg msgs[2] = {
+        { .addr = MAX17055_I2C_ADDR, .flags = 0,        .len = 1, .buf = &reg },
+        { .addr = MAX17055_I2C_ADDR, .flags = I2C_M_RD, .len = 2, .buf = buf  },
+    };
+    struct i2c_rdwr_ioctl_data io = { .msgs = msgs, .nmsgs = 2 };
+    if (ioctl(fd, I2C_RDWR, &io) < 0)
+        return false;
+    *out_val = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+    return true;
+}
+
+static bool max17055_write_reg(int fd, uint8_t reg, uint16_t val) {
+    if (fd < 0)
+        return false;
+    uint8_t buf[3] = { reg, (uint8_t)(val & 0xFFU), (uint8_t)((val >> 8) & 0xFFU) };
+    struct i2c_msg msg = {
+        .addr  = MAX17055_I2C_ADDR,
+        .flags = 0,
+        .len   = 3,
+        .buf   = buf,
+    };
+    struct i2c_rdwr_ioctl_data io = { .msgs = &msg, .nmsgs = 1 };
+    return (ioctl(fd, I2C_RDWR, &io) >= 0);
+}
+
+static void init_max17055(osd_hw_t *hw) {
+    hw->i2c_bat_fd   = -1;
+    hw->has_max17055 = false;
+
+    int fd = open("/dev/i2c-1", O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return;
+
+    uint16_t devname = 0;
+    if (!max17055_read_reg(fd, 0x21, &devname) || (devname & 0xFFF0U) != 0x4010U) {
+        close(fd);
+        return;
+    }
+
+    hw->i2c_bat_fd   = fd;
+    hw->has_max17055 = true;
+
+    /* Check if POR (Status bit 1) is set or DesignCap != 3570 mAh (7140 LSB) */
+    uint16_t status = 0, dcap = 0;
+    if (max17055_read_reg(fd, 0x00, &status) &&
+        max17055_read_reg(fd, 0x18, &dcap)) {
+        if ((status & 0x0002U) || dcap != MAX17055_DESIGN_CAP_LSB) {
+            uint16_t hibcfg = 0x890CU;
+            max17055_read_reg(fd, 0xBA, &hibcfg);
+
+            /* Exit Hibernate Mode per Maxim ModelGauge m5 EZ Guide */
+            max17055_write_reg(fd, 0x60, 0x0090U);
+            max17055_write_reg(fd, 0xBA, 0x0000U);
+            max17055_write_reg(fd, 0x60, 0x0000U);
+
+            /* Write HDH-003 (3.8V/4.35V, 3570mAh) + 10mOhm EZ Config */
+            max17055_write_reg(fd, 0x18, MAX17055_DESIGN_CAP_LSB);
+            max17055_write_reg(fd, 0x45, MAX17055_DQACC_LSB);
+            max17055_write_reg(fd, 0x1E, MAX17055_ICHGTERM_LSB);
+            max17055_write_reg(fd, 0x3A, MAX17055_VEMPTY_CFG);
+            max17055_write_reg(fd, 0x46, MAX17055_DPACC_LSB);
+            max17055_write_reg(fd, 0xDB, 0x8400U); /* Refresh=1, VChg=1 (4.35V Li-ion) */
+
+            for (int i = 0; i < 50; i++) {
+                uint16_t mcfg = 0;
+                if (max17055_read_reg(fd, 0xDB, &mcfg) && !(mcfg & 0x8000U))
+                    break;
+                usleep(10000);
+            }
+
+            max17055_write_reg(fd, 0xBA, hibcfg);
+            if (max17055_read_reg(fd, 0x00, &status))
+                max17055_write_reg(fd, 0x00, status & ~0x0002U);
+        }
+    }
+}
+
+static bool read_max17055_battery(osd_hw_t *hw, int *out_pct, bool *out_charging) {
+    if (!hw->has_max17055 || hw->i2c_bat_fd < 0)
+        return false;
+
+    uint16_t status = 0, dcap = 0;
+    if (max17055_read_reg(hw->i2c_bat_fd, 0x00, &status) && (status & 0x0002U)) {
+        /* Re-run EZ Config if battery was hot-plugged (POR bit set) */
+        close(hw->i2c_bat_fd);
+        init_max17055(hw);
+        if (!hw->has_max17055)
+            return false;
+    } else if (max17055_read_reg(hw->i2c_bat_fd, 0x18, &dcap) &&
+               dcap != MAX17055_DESIGN_CAP_LSB) {
+        close(hw->i2c_bat_fd);
+        init_max17055(hw);
+        if (!hw->has_max17055)
+            return false;
+    }
+
+    uint16_t repsoc_raw = 0, curr_raw = 0, avg_curr_raw = 0;
+    if (!max17055_read_reg(hw->i2c_bat_fd, 0x06, &repsoc_raw))
+        return false;
+
+    int pct = clampi((int)lroundf((float)repsoc_raw / 256.0f), 0, 100);
+    bool charging = false;
+    if (max17055_read_reg(hw->i2c_bat_fd, 0x0A, &curr_raw) &&
+        max17055_read_reg(hw->i2c_bat_fd, 0x0B, &avg_curr_raw)) {
+        int16_t curr_s     = (int16_t)curr_raw;
+        int16_t avg_curr_s = (int16_t)avg_curr_raw;
+        /* 1 LSB = 0.15625 mA with 0.01 Ohm sense resistor; > +15 mA (96 LSB) = charging */
+        charging = (curr_s > 96 || avg_curr_s > 96);
+    }
+
+    *out_pct      = pct;
+    *out_charging = charging;
+    return true;
+}
+
+/* ==========================================================================
+ * 4. Backlight & Runtime IPC Files
  * ========================================================================== */
 
 static void discover_backlight(osd_hw_t *hw) {
@@ -462,6 +599,11 @@ void osd_hw_init(osd_hw_t *hw, const osd_config_t *cfg, osd_state_t *st) {
     mkdir("/run/kdm-osd", 0755);
     discover_backlight(hw);
     init_alsa_mixer(hw);
+    init_max17055(hw);
+    if (hw->has_max17055) {
+        /* Clear any stale manual override file when live MAX17055 is present */
+        unlink("/run/kdm-osd/battery");
+    }
 
     /* Initialize Quick Settings toggles from real system state */
     st->qs_active[OSD_QS_WIFI]      = is_system_wifi_enabled();
@@ -518,6 +660,11 @@ void osd_hw_init(osd_hw_t *hw, const osd_config_t *cfg, osd_state_t *st) {
 void osd_hw_destroy(osd_hw_t *hw) {
     if (!hw)
         return;
+    if (hw->i2c_bat_fd >= 0) {
+        close(hw->i2c_bat_fd);
+        hw->i2c_bat_fd   = -1;
+        hw->has_max17055 = false;
+    }
     if (hw->alsa_mixer) {
         snd_mixer_close((snd_mixer_t *)hw->alsa_mixer);
         hw->alsa_mixer = NULL;
@@ -603,7 +750,7 @@ void osd_hw_update_status(osd_hw_t *hw, const osd_config_t *cfg, osd_state_t *st
         }
     }
 
-    /* 3. Battery Status */
+    /* 3. Battery Status (Manual /run/kdm-osd/battery override -> Live MAX17055 -> Mock fallback) */
     FILE *ovr = fopen("/run/kdm-osd/battery", "r");
     if (ovr) {
         int pct = -1;
@@ -617,6 +764,15 @@ void osd_hw_update_status(osd_hw_t *hw, const osd_config_t *cfg, osd_state_t *st
         }
         fclose(ovr);
     }
+
+    int live_pct = 0;
+    bool live_chg = false;
+    if (read_max17055_battery(hw, &live_pct, &live_chg)) {
+        st->battery_pct = live_pct;
+        st->charging    = live_chg;
+        return;
+    }
+
     st->battery_pct = cfg->mock_battery;
     st->charging    = cfg->mock_charging;
 }

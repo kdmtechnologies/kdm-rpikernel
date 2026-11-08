@@ -565,26 +565,10 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
         rotate_blit_rect(drm, target->map, canvas, cfg, dirty);
     }
 
-    if (drm->cached_master_fd >= 0) {
-        if (drm->cached_master_pid <= 0 || kill(drm->cached_master_pid, 0) != 0 ||
-            !is_drm_master_fd(drm->cached_master_fd)) {
-            close(drm->cached_master_fd);
-            drm->cached_master_fd         = -1;
-            drm->cached_master_pid        = -1;
-            drm->bufs[0].cached_fb_id     = 0;
-            drm->bufs[1].cached_fb_id     = 0;
-            drm->dim_bufs[0].cached_fb_id = 0;
-            drm->dim_bufs[1].cached_fb_id = 0;
-            drm->zpos_set                 = false;
-            drm->last_dim_pct             = -1;
-        }
-    }
-
-    if (drm->cached_master_fd < 0) {
-        pid_t mpid = -1;
-        int mfd = borrow_active_drm_master_fd(drm->card_minor, &mpid);
-        if (mfd >= 0) {
-            drm->cached_master_fd         = mfd;
+    pid_t mpid = -1;
+    int mfd = borrow_active_drm_master_fd(drm->card_minor, &mpid);
+    if (mfd >= 0) {
+        if (mpid != drm->cached_master_pid) {
             drm->cached_master_pid        = mpid;
             drm->bufs[0].cached_fb_id     = 0;
             drm->bufs[1].cached_fb_id     = 0;
@@ -593,10 +577,18 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
             drm->zpos_set                 = false;
             drm->last_dim_pct             = -1;
         }
+    } else if (drm->cached_master_pid != -1) {
+        drm->cached_master_pid        = -1;
+        drm->bufs[0].cached_fb_id     = 0;
+        drm->bufs[1].cached_fb_id     = 0;
+        drm->dim_bufs[0].cached_fb_id = 0;
+        drm->dim_bufs[1].cached_fb_id = 0;
+        drm->zpos_set                 = false;
+        drm->last_dim_pct             = -1;
     }
 
-    bool borrowed = (drm->cached_master_fd >= 0);
-    int use_fd    = borrowed ? drm->cached_master_fd : drm->fd;
+    bool borrowed = (mfd >= 0);
+    int use_fd    = borrowed ? mfd : drm->fd;
 
     if (!borrowed)
         drmSetMaster(drm->fd);
@@ -618,9 +610,27 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
         compute_plane_crop(drm, cfg, st, &crtc_x, &crtc_y, &crtc_w, &crtc_h,
                            &src_x, &src_y, &src_w, &src_h);
 
-        drmModeSetPlane(use_fd, drm->plane_id, drm->crtc_id, target->cached_fb_id, 0,
-                        crtc_x, crtc_y, crtc_w, crtc_h,
-                        src_x, src_y, src_w, src_h);
+        if (drmModeSetPlane(use_fd, drm->plane_id, drm->crtc_id, target->cached_fb_id, 0,
+                            crtc_x, crtc_y, crtc_w, crtc_h,
+                            src_x, src_y, src_w, src_h) < 0 && borrowed) {
+            /* Master process reopened /dev/dri/cardN with a new drm_file; re-import FBs */
+            drm->bufs[0].cached_fb_id     = 0;
+            drm->bufs[1].cached_fb_id     = 0;
+            drm->dim_bufs[0].cached_fb_id = 0;
+            drm->dim_bufs[1].cached_fb_id = 0;
+            drm->last_dim_pct             = -1;
+            if (ensure_fb_registered_ex(use_fd, borrowed, target, drm->buf_w, drm->buf_h, drm->pitch)) {
+                if (drm->dim_plane_id != 0) {
+                    set_plane_zpos_offset(use_fd, drm->plane_id, 1);
+                    set_plane_zpos_offset(use_fd, drm->dim_plane_id, 0);
+                } else {
+                    set_plane_zpos_offset(use_fd, drm->plane_id, 0);
+                }
+                drmModeSetPlane(use_fd, drm->plane_id, drm->crtc_id, target->cached_fb_id, 0,
+                                crtc_x, crtc_y, crtc_w, crtc_h,
+                                src_x, src_y, src_w, src_h);
+            }
+        }
         drm->front_idx = target_idx;
 
         if (drm->stale_fb_id != 0 &&
@@ -634,7 +644,9 @@ void osd_drm_present(osd_drm_t *drm, const osd_canvas_t *canvas,
     /* Update Hardware HVS Full-Screen LCD Dimmer Plane */
     update_hardware_lcd_dimmer(drm, use_fd, borrowed, st->brightness_pct);
 
-    if (!borrowed)
+    if (borrowed)
+        close(mfd);
+    else
         drmDropMaster(drm->fd);
 
     /* Keep secondary buffer synchronized when shade is active so partial dirty rects stay tear-free */
@@ -653,8 +665,10 @@ void osd_drm_destroy(osd_drm_t *drm) {
     if (!drm || drm->fd < 0)
         return;
 
-    bool borrowed = (drm->cached_master_fd >= 0);
-    int use_fd    = borrowed ? drm->cached_master_fd : drm->fd;
+    pid_t mpid = -1;
+    int mfd = borrow_active_drm_master_fd(drm->card_minor, &mpid);
+    bool borrowed = (mfd >= 0);
+    int use_fd    = borrowed ? mfd : drm->fd;
     if (!borrowed)
         drmSetMaster(drm->fd);
 
@@ -672,13 +686,10 @@ void osd_drm_destroy(osd_drm_t *drm) {
             drm->dim_bufs[i].cached_fb_id = 0;
         }
     }
-    if (!borrowed)
+    if (borrowed)
+        close(mfd);
+    else
         drmDropMaster(drm->fd);
-
-    if (drm->cached_master_fd >= 0) {
-        close(drm->cached_master_fd);
-        drm->cached_master_fd = -1;
-    }
     for (int i = 0; i < 2; i++) {
         if (drm->bufs[i].map) {
             munmap(drm->bufs[i].map, drm->size);

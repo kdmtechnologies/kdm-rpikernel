@@ -76,7 +76,7 @@ init_ez_config_if_needed() {
 print_status() {
     init_ez_config_if_needed
 
-    local dev_h status_h vcell_h avgv_h curr_h avgc_h soc_h repcap_h fullcap_h dcap_h tte_h ttf_h temp_h cyc_h
+    local dev_h status_h vcell_h avgv_h curr_h avgc_h soc_h repcap_h fullcap_h dcap_h tte_h ttf_h temp_h cyc_h cpu_mc
     dev_h=$(read_reg16 0x21)
     status_h=$(read_reg16 0x00)
     vcell_h=$(read_reg16 0x09)
@@ -91,6 +91,7 @@ print_status() {
     ttf_h=$(read_reg16 0x20)
     temp_h=$(read_reg16 0x08)
     cyc_h=$(read_reg16 0x17)
+    cpu_mc=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
 
     awk -v dev="$((dev_h))" \
         -v status="$((status_h))" \
@@ -106,6 +107,7 @@ print_status() {
         -v ttf="$((ttf_h))" \
         -v temp="$((temp_h))" \
         -v cyc="$((cyc_h))" \
+        -v cpu_mc="$((cpu_mc))" \
     'BEGIN {
         if (curr >= 32768) curr -= 65536;
         if (avgc >= 32768) avgc -= 65536;
@@ -134,6 +136,7 @@ print_status() {
         rcap_wh  = (rcap_mah * 3.8) / 1000.0;
         dcap_wh  = (dcap_mah * 3.8) / 1000.0;
         temp_c   = temp / 256.0;
+        cpu_c    = cpu_mc / 1000.0;
         cycles   = cyc * 0.01;
 
         if (i_ma > 20.0 || avgi_ma > 20.0) {
@@ -158,33 +161,36 @@ print_status() {
             ttf_str = sprintf("%dh %02dm", int(ttf_min / 60), ttf_min % 60);
         }
 
-        printf "============================================================\n";
-        printf "  KDM Battery Status (MAX17055ETB+T @ /dev/i2c-1:0x36)\n";
-        printf "============================================================\n";
-        printf "  Battery Model  : Nintendo Switch Lite HDH-003 (3.8V, 3570mAh, 13.6Wh)\n";
-        printf "  Sense Resistor : YAGEO PS0306DRF7T0R01L (0.01 Ohm / 10 mOhm)\n";
-        printf "  Chip DevName   : 0x%04X (Status: 0x%04X)\n", dev, status;
-        printf "------------------------------------------------------------\n";
-        printf "  State          : %s\n", state;
-        printf "  SOC (RepSOC)   : %.2f%% (OSD: %d%%)\n", soc_pct, soc_int;
-        printf "  Voltage        : %.3f V (%d mV)  [Avg: %.3f V (%d mV)]\n",
+        printf "============================================================\033[K\n";
+        printf "  KDM Battery Status (MAX17055ETB+T @ /dev/i2c-1:0x36)\033[K\n";
+        printf "============================================================\033[K\n";
+        printf "  Battery Model  : Nintendo Switch Lite HDH-003 (3.8V, 3570mAh, 13.6Wh)\033[K\n";
+        printf "  Sense Resistor : YAGEO PS0306DRF7T0R01L (0.01 Ohm / 10 mOhm)\033[K\n";
+        printf "  Chip DevName   : 0x%04X (Status: 0x%04X)\033[K\n", dev, status;
+        printf "------------------------------------------------------------\033[K\n";
+        printf "  State          : %s\033[K\n", state;
+        printf "  SOC (RepSOC)   : %.2f%% (OSD: %d%%)\033[K\n", soc_pct, soc_int;
+        printf "  Voltage        : %.3f V (%d mV)  [Avg: %.3f V (%d mV)]\033[K\n",
                v_mv / 1000.0, int(v_mv + 0.5), avgv_mv / 1000.0, int(avgv_mv + 0.5);
-        printf "  Current        : %+.1f mA         [Avg: %+.1f mA]\n", i_ma, avgi_ma;
-        printf "  Power          : %+.2f W\n", pwr_w;
-        printf "  Capacity       : %.1f / %.1f mAh (Design: %.1f mAh | %.2f / %.2f Wh)\n",
+        printf "  Current        : %+.1f mA         [Avg: %+.1f mA]\033[K\n", i_ma, avgi_ma;
+        printf "  Power          : %+.2f W\033[K\n", pwr_w;
+        printf "  Capacity       : %.1f / %.1f mAh (Design: %.1f mAh | %.2f / %.2f Wh)\033[K\n",
                rcap_mah, fcap_mah, dcap_mah, rcap_wh, dcap_wh;
-        printf "  Time to Empty  : %s\n", tte_str;
-        printf "  Time to Full   : %s\n", ttf_str;
-        printf "  Temperature    : %.1f C\n", temp_c;
-        printf "  Charge Cycles  : %.2f\n", cycles;
-        printf "============================================================\n";
+        printf "  Time to Empty  : %s\033[K\n", tte_str;
+        printf "  Time to Full   : %s\033[K\n", ttf_str;
+        printf "  MAX17055 Temp  : %.1f C (IC Die)\033[K\n", temp_c;
+        printf "  CPU Temp       : %.1f C (BCM2711)\033[K\n", cpu_c;
+        printf "  Charge Cycles  : %.2f\033[K\n", cycles;
+        printf "============================================================\033[K\n";
     }'
 }
 
 if [[ "${1:-}" == "-w" || "${1:-}" == "--watch" ]]; then
+    trap 'printf "\033[?25h\n"; exit 0' INT TERM EXIT
+    printf '\033[?25l\033[2J\033[H'
     while true; do
-        clear
-        print_status
+        out="$(print_status)"
+        printf '\033[H%s\033[J\n' "$out"
         sleep 1
     done
 else

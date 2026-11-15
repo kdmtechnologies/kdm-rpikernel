@@ -362,19 +362,13 @@ static int sh8801a_push_cmd_list(struct mipi_dsi_device *dsi,
 				 size_t count)
 {
 	size_t i;
-	int ret = 0;
+	ssize_t ret;
 
 	for (i = 0; i < count; i++) {
-		struct mipi_dsi_msg msg = {
-			.channel = dsi->channel,
-			.type = MIPI_DSI_DCS_LONG_WRITE,
-			.tx_buf = cmd_set[i].data,
-			.tx_len = cmd_set[i].len,
-		};
-
-		ret = mipi_dsi_device_transfer(dsi, &msg);
+		ret = mipi_dsi_dcs_write_buffer(dsi, cmd_set[i].data,
+						cmd_set[i].len);
 		if (ret < 0)
-			return ret;
+			return (int)ret;
 	}
 
 	return 0;

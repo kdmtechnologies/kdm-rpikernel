@@ -5,6 +5,11 @@ After=systemd-udevd.service
 [Service]
 Type=simple
 ExecStartPre=/bin/mkdir -p /run/kdm-osd
+# Wait for EmulationStation to actually be running before grabbing our DRM
+# overlay plane: starting any earlier races the kernel's own boot logo on
+# the same CRTC (visible glitch/flicker during the splash). Capped at 30s
+# so the OSD still comes up even if ES is disabled/replaced.
+ExecStartPre=/bin/sh -c 'ES=/opt/retropie/supplementary/emulationstation/emulationstation; i=0; while ! pgrep -f "$ES --" >/dev/null 2>&1; do i=$((i+1)); [ "$i" -ge 150 ] && break; sleep 0.2; done; sleep 1'
 ExecStart=/usr/local/bin/kdm-osd --rotate 270 --scale 1.0 --battery 75
 Restart=always
 RestartSec=2

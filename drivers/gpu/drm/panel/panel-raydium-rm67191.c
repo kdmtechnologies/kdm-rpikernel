@@ -8,6 +8,7 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/io.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -362,13 +363,12 @@ static int sh8801a_push_cmd_list(struct mipi_dsi_device *dsi,
 				 size_t count)
 {
 	size_t i;
-	ssize_t ret;
+	int ret;
 
 	for (i = 0; i < count; i++) {
-		ret = mipi_dsi_dcs_write_buffer(dsi, cmd_set[i].data,
-						cmd_set[i].len);
+		ret = mipi_dsi_dcs_write_buffer(dsi, cmd_set[i].data, cmd_set[i].len);
 		if (ret < 0)
-			return (int)ret;
+			return ret;
 	}
 
 	return 0;
@@ -436,6 +436,42 @@ fail:
 	return ret;
 }
 
+static void sh8801a_dsi1_pause_hs_video(void __iomem *dsi_base, u32 *saved_disp0)
+{
+	u32 disp0 = readl(dsi_base + 0x28);
+	u32 ctrl, stat;
+
+	if (saved_disp0)
+		*saved_disp0 = disp0;
+
+	if (!(disp0 & 0x00000781U))
+		return;
+
+	/*
+	 * Clear HACTIVE_NULL/blanking bits (0x780) and DSI_DISP0_ENABLE (0x1),
+	 * then wait one frame (~20 ms) so DSI1 finishes the current frame into
+	 * LP-11 STOP cleanly before resetting command/pixel FIFOs.
+	 */
+	writel(disp0 & ~0x00000781U, dsi_base + 0x28);
+	usleep_range(19000, 22000);
+
+	stat = readl(dsi_base + 0x38);
+	if (!(stat & BIT(24))) {
+		u32 phyc = readl(dsi_base + 0x4c);
+
+		writel(phyc | BIT(2), dsi_base + 0x4c);
+		udelay(50);
+		writel(phyc & ~BIT(2), dsi_base + 0x4c);
+		udelay(50);
+	}
+
+	ctrl = readl(dsi_base + 0x00);
+	writel(ctrl | 0x000000f0U, dsi_base + 0x00);
+	writel(ctrl, dsi_base + 0x00);
+	writel(readl(dsi_base + 0x30), dsi_base + 0x30);
+	writel(readl(dsi_base + 0x38), dsi_base + 0x38);
+}
+
 static int rad_panel_unprepare(struct drm_panel *panel)
 {
 	struct rad_panel *rad = to_rad_panel(panel);
@@ -445,6 +481,15 @@ static int rad_panel_unprepare(struct drm_panel *panel)
 
 	if (!rad->prepared)
 		return 0;
+
+	if (rad->pdata && rad->pdata->brightness_10bit) {
+		void __iomem *dsi_base = ioremap(0xfe700000, 0x90);
+
+		if (dsi_base) {
+			sh8801a_dsi1_pause_hs_video(dsi_base, NULL);
+			iounmap(dsi_base);
+		}
+	}
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
@@ -690,7 +735,7 @@ static int sh8801a_enable(struct rad_panel *panel)
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	/* 1. DCS_Short_Write_NP(0x11) + Delay(120) */
+	/* 1. DCS exit sleep mode (0x11) + 120ms delay */
 	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to exit sleep mode (%d)\n", ret);
@@ -699,25 +744,34 @@ static int sh8801a_enable(struct rad_panel *panel)
 
 	msleep(120);
 
-	/* 2. Manufacturer command sequence (mipi.write 0x39 ...) */
+	/* 2. Manufacturer command sequence (MCS) */
 	ret = sh8801a_push_cmd_list(dsi, mcs_sh8801a, ARRAY_SIZE(mcs_sh8801a));
 	if (ret < 0) {
 		dev_err(dev, "Failed to send SH8801A MCS (%d)\n", ret);
 		goto fail;
 	}
 
-	/* 3. E1h OSC_FCON_FSET110[1:0]=2'b10 --> 2'b00 */
-	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xFE, 0x80 }, 2);
+	/*
+	 * 3. Oscillator fine trim:
+	 * Page 0x80, register 0xE1 byte 4 (OSC_FCON) trimmed from factory 0x4E
+	 * down to 0x44. This adjusts internal GRAM scanout from 59.80 Hz down
+	 * to 56.09 Hz, matching BCM2711 DSI1 pixel valve output clock (56.09 Hz)
+	 * to within 0.0012 Hz (0.4 us/frame) and eliminating scrolling tearing.
+	 */
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xFE, 0x80 }, 2);
 	if (ret < 0)
 		goto fail;
-	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xB0, 0x09 }, 2);
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xB0, 0x01 }, 2);
 	if (ret < 0)
 		goto fail;
-	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0xE1, 0x01 }, 2);
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xE1, 0x22, 0x02, 0x01, 0x64, 0x44, 0x91, 0x23, 0x00, 0x01 }, 10);
+	if (ret < 0)
+		goto fail;
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xFE, 0x00 }, 2);
 	if (ret < 0)
 		goto fail;
 
-	/* 4. DCS_Short_Write_NP(0x29) + Delay(120) */
+	/* 4. Display ON (0x29) + 120ms delay */
 	ret = mipi_dsi_dcs_set_display_on(dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set display ON (%d)\n", ret);
@@ -726,12 +780,12 @@ static int sh8801a_enable(struct rad_panel *panel)
 
 	msleep(120);
 
-	/* 5. Set 10-bit brightness (0x51, LSB, MSB) and MADCTL (0x36, 0xC0) */
+	/* 5. Set initial brightness and MADCTL (0x36, 0xC0) */
 	ret = rad_panel_set_brightness(panel, init_brt);
 	if (ret < 0)
 		dev_warn(dev, "Failed to set initial brightness (%d)\n", ret);
 
-	ret = mipi_dsi_generic_write(dsi, (u8[]){ 0x36, 0xC0 }, 2);
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0x36, 0xC0 }, 2);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set address mode 0xC0 (%d)\n", ret);
 		goto fail;
@@ -752,11 +806,41 @@ fail:
 
 static int rad_panel_enable(struct drm_panel *panel)
 {
+	struct rad_panel *rad = to_rad_panel(panel);
+
+	/*
+	 * Configure BCM2711 DSI1_DISP0_CTRL (0xfe700028) to transmit HS null
+	 * packets and blanking packets (HACTIVE_NULL | VBLP_CTRL | HFP_CTRL |
+	 * HBP_CTRL = 0x780) after vc4_dsi_bridge_enable() starts DSI_DISP0_ENABLE,
+	 * keeping the 4 DSI data lanes in continuous High-Speed mode for SH8801A.
+	 */
+	if (rad->pdata && rad->pdata->brightness_10bit) {
+		void __iomem *dsi_base = ioremap(0xfe700000, 0x40);
+
+		if (dsi_base) {
+			u32 disp0 = readl(dsi_base + 0x28);
+
+			writel(disp0 | 0x00000780U, dsi_base + 0x28);
+			iounmap(dsi_base);
+		}
+	}
+
 	return 0;
 }
 
 static int rad_panel_disable(struct drm_panel *panel)
 {
+	struct rad_panel *rad = to_rad_panel(panel);
+
+	if (rad->pdata && rad->pdata->brightness_10bit) {
+		void __iomem *dsi_base = ioremap(0xfe700000, 0x90);
+
+		if (dsi_base) {
+			sh8801a_dsi1_pause_hs_video(dsi_base, NULL);
+			iounmap(dsi_base);
+		}
+	}
+
 	return 0;
 }
 
@@ -849,20 +933,38 @@ static int rad_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	struct rad_panel *rad = mipi_dsi_get_drvdata(dsi);
+	void __iomem *dsi_base = NULL;
+	u32 saved_disp0 = 0;
 	u8 val = backlight_get_brightness(bl) & 0xff;
 	int ret = 0;
 
 	if (!rad->prepared)
 		return 0;
 
-	/*
-	 * Send DCS brightness write in High-Speed (HS) mode so the packet
-	 * fits inside the 416 ns HFP blanking window without dropping to
-	 * LPDT or stalling video scanout.
-	 */
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	if (rad->pdata && rad->pdata->brightness_10bit) {
+		dsi_base = ioremap(0xfe700000, 0x90);
+		if (dsi_base)
+			sh8801a_dsi1_pause_hs_video(dsi_base, &saved_disp0);
+		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	} else {
+		/*
+		 * Send DCS brightness write in High-Speed (HS) mode so the packet
+		 * fits inside the 416 ns HFP blanking window without dropping to
+		 * LPDT or stalling video scanout.
+		 */
+		dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	}
 
 	ret = rad_panel_set_brightness(rad, val);
+
+	if (dsi_base) {
+		if (saved_disp0 & 0x00000780U) {
+			dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+			writel(saved_disp0, dsi_base + 0x28);
+		}
+		iounmap(dsi_base);
+	}
+
 	if (ret < 0)
 		return ret;
 

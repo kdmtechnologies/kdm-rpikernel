@@ -752,19 +752,21 @@ static int sh8801a_enable(struct rad_panel *panel)
 	}
 
 	/*
-	 * 3. Oscillator fine trim:
-	 * Page 0x80, register 0xE1 byte 4 (OSC_FCON) trimmed from factory 0x4E
-	 * down to 0x44. This adjusts internal GRAM scanout from 59.80 Hz down
-	 * to 56.09 Hz, matching BCM2711 DSI1 pixel valve output clock (56.09 Hz)
-	 * to within 0.0012 Hz (0.4 us/frame) and eliminating scrolling tearing.
+	 * 3. Oscillator fine trim (per vendor MIPI code V1.0):
+	 * Page 0x80, index offset 9 into the 0xE1 parameter table, set that
+	 * single byte to 0x01 (OSC_FCON_FSET110[1:0] 2'b10 -> 2'b00). 0xB0
+	 * is an index pointer: the byte(s) following 0xE1 land starting at
+	 * that offset, so this must stay a single-byte write at offset 9 -
+	 * writing more bytes, or at a different offset, clobbers unrelated
+	 * TCON timing parameters sharing the same table.
 	 */
 	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xFE, 0x80 }, 2);
 	if (ret < 0)
 		goto fail;
-	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xB0, 0x01 }, 2);
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xB0, 0x09 }, 2);
 	if (ret < 0)
 		goto fail;
-	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xE1, 0x22, 0x02, 0x01, 0x64, 0x44, 0x91, 0x23, 0x00, 0x01 }, 10);
+	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xE1, 0x01 }, 2);
 	if (ret < 0)
 		goto fail;
 	ret = mipi_dsi_dcs_write_buffer(dsi, (u8[]){ 0xFE, 0x00 }, 2);
